@@ -5,7 +5,8 @@
  * 1. 打开浏览器，进入目标交易对页面 (例如: https://www.binance.com/zh-CN/alpha/bsc/0x92aa03137385f18539301349dcfc9ebc923ffb10)
  * 2. 打开开发者工具 (F12)，进入控制台 tab
  * 3. 配置以下参数:
- *    - slippage: 滑点百分比
+ *    - buySlippage: 买入滑点百分比
+ *    - sellSlippage: 卖出滑点百分比
  *    - buyAmountEachTime: 每次买入数量
  *    - retryOrderCheckMaxCount: 交易未完成时的重试次数
  *    - loopCount: 交易循环次数
@@ -13,7 +14,8 @@
  */
 
 // 交易配置参数
-let slippage = '0.1'        // 滑点百分比
+let buySlippage = '0.1'        // 滑点百分比
+let sellSlippage = '0.1'        // 滑点百分比
 let buyAmountEachTime = 520  // 每次买入数量
 let retryOrderCheckMaxCount = 10  // 交易未完成时的重试次数
 let loopCount = 20          // 交易循环次数
@@ -148,7 +150,7 @@ async function clickCustomElement() {
  * @returns {Promise<void>}
  */
 async function setCustomSlippage(customSlippage) {
-  // 查找并设置自定义滑点值为0.1
+  // 查找并设置自定义滑点值
   return waitForElement(
     '#customize-slippage',
     null, 10, 2000
@@ -364,7 +366,7 @@ async function launchBuy() {
   setInputValue(document.querySelector('#fromCoinAmount'), buyAmountEachTime)
   await clickPriorityMode();
   await clickCustomElement();
-  await setCustomSlippage(slippage);
+  await setCustomSlippage(buySlippage);
   await clickModalConfirmButton();
   await confirmOrderPlace('buy');
   await clickModalConfirmButton();
@@ -384,7 +386,7 @@ async function launchSell() {
   }
   await clickPriorityMode();
   await clickCustomElement();
-  await setCustomSlippage(slippage);
+  await setCustomSlippage(sellSlippage);
   await clickModalConfirmButton();
   await confirmOrderPlace('sell');
   await clickModalConfirmButton();
