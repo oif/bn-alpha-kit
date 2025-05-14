@@ -14,9 +14,9 @@
 
 // 交易配置参数
 let slippage = '0.1'        // 滑点百分比
-let buyAmountEachTime = 20  // 每次买入数量
-let retryOrderCheckMaxCount = 20  // 交易未完成时的重试次数
-let loopCount = 10          // 交易循环次数
+let buyAmountEachTime = 520  // 每次买入数量
+let retryOrderCheckMaxCount = 10  // 交易未完成时的重试次数
+let loopCount = 20          // 交易循环次数
 
 // 延迟5秒后启动交易
 setTimeout(() => {
@@ -76,7 +76,7 @@ function setInputValue(inputElement, value) {
  * @param {number} initialDelay - 初始延迟(毫秒)
  * @returns {Promise<HTMLElement>}
  */
-function waitForElement(selector, checker = null, maxAttempts = 10, interval = 2000, initialDelay = 0) {
+function waitForElement(selector, checker = null, maxAttempts = 10, interval = 2000, initialDelay = 1000) {
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       let attempts = 0;
@@ -233,8 +233,6 @@ async function openOrderHistory() {
 async function checkRecentOrderStatus(direction) {
   // TODO: Should Check with order related to the current order
   // 等待表格加载
-  return waitForElement(
-    () => {
       const rows = document.querySelectorAll('.bn-web-table-row');
       if (rows.length < 1) return null;
       
@@ -256,9 +254,6 @@ async function checkRecentOrderStatus(direction) {
       // 检查状态是否为"已完成"
       const isCompleted = statusCell.textContent === '已完成';
       return isDirectionMatch && isCompleted;
-    },
-    null, 10, 2000
-  );
 }
 
 /**
@@ -291,9 +286,34 @@ async function launch() {
   // 清空一次订单
   await placeTillSuccess(launchSell, '卖出', 0);
   for (let i = 0; i < loopCount; i++) {
-    await placeTillSuccess(launchSell, '卖出');
     await placeTillSuccess(launchBuy, '买入');
+    await placeTillSuccess(launchSell, '卖出');
+    logit('第' + (i + 1) + '次交易完成，预计交易额' + (buyAmountEachTime * (i + 1)));
   }
+}
+
+async function waitForOrderProcessingCompletion() {
+  logit('等待订单处理完成...');
+  return new Promise((resolve) => {
+    const checkInterval = setInterval(() => {
+      const orderTab = document.querySelector('#bn-tab-orderOrder');
+      if (orderTab && orderTab.textContent === '处理中(0)') { 
+        logit('订单处理已完成: 处理中(0)');
+        clearInterval(checkInterval);
+        resolve();
+      } else {
+        const currentStatus = orderTab ? orderTab.textContent : '未找到元素';
+        logit(`订单处理中: ${currentStatus}`);
+      }
+    }, 1000); // 每秒检查一次
+    
+    // 设置超时，防止无限等待
+    setTimeout(() => {
+      clearInterval(checkInterval);
+      logit('等待订单处理完成超时，继续执行');
+      resolve();
+    }, 30000); // 30秒超时
+  });
 }
 
 /**
@@ -305,8 +325,11 @@ async function launch() {
  */
 async function placeTillSuccess(operationFunction, direction, maxRetryCount = retryOrderCheckMaxCount) {
   await operationFunction();
+  
+  await waitForOrderProcessingCompletion();
+  
 
-  let retryCount = 0
+  let retryCount = 0;
   while (true) {
     const orderStatus = await checkRecentOrderStatus(direction);
     logit('orderStatus', orderStatus);
@@ -314,10 +337,17 @@ async function placeTillSuccess(operationFunction, direction, maxRetryCount = re
       logit('交易已完成');
       break;
     }
-    logit('交易未完成，继续下单');
+    
+    // 增加重试间隔，每次重试等待3秒
+    logit(`交易未完成，等待3秒后继续下单 (${retryCount + 1}/${maxRetryCount})`);
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
     await operationFunction();
-    retryCount++
-    if (retryCount > maxRetryCount) {
+    await waitForOrderProcessingCompletion();
+
+    
+    retryCount++;
+    if (retryCount >= maxRetryCount) {
       logit(`交易未完成，超过${maxRetryCount}次，重新加载页面`);
       break;
     }
@@ -338,7 +368,6 @@ async function launchBuy() {
   await clickModalConfirmButton();
   await confirmOrderPlace('buy');
   await clickModalConfirmButton();
-
 }
 
 /**
@@ -349,6 +378,10 @@ async function launchSell() {
   await switchToBuyOrSell('卖出');
 
   setInputValue(document.querySelector('input[role="slider"]'), 100)
+  if (document.querySelector('input[role="slider"]').value === '0') {
+    logit('卖出失败，无存货');
+    return;
+  }
   await clickPriorityMode();
   await clickCustomElement();
   await setCustomSlippage(slippage);
