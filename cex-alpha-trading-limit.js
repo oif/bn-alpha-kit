@@ -39,9 +39,9 @@
 
 // === 全局参数配置 ===
 /** 买入价格（建议略低于市价，单位：币种） */
-const ORDER_PRICE_BUY = 48.0135;
+let ORDER_PRICE_BUY = 48.0135;
 /** 卖出价格（建议略高于市价，单位：币种） */
-const ORDER_PRICE_SELL = 48.014;
+let ORDER_PRICE_SELL = 48.0135;
 /** 每次买/卖的数量（单位：币种） */
 const ORDER_VOLUME = 390;
 /** 最大刷单轮数（即买入+卖出为一轮） */
@@ -50,6 +50,13 @@ const MAX_TRADES = 10;
 const ORDER_TIMEOUT_MS = 300000;
 /** 遇到价格警告弹窗时是否中止（true/false） */
 const ABORT_ON_PRICE_WARNING = false;
+
+// === 强制中断支持 ===
+let stopTrading = false;
+window.stopAlphaTrading = () => {
+  stopTrading = true;
+  logit('已收到 stopAlphaTrading 指令，自动刷单将尽快中断...');
+};
 
 // 订单类型常量
 const ORDER_TYPE = {
@@ -388,6 +395,10 @@ async function sell(price, volume, abortOnPriceWarning = false) {
 async function startTrading() {
   let tradeCount = 0;
   while (tradeCount < MAX_TRADES) {
+    if (stopTrading) {
+      logit('检测到 stopTrading 标志，自动刷单已被强制中断');
+      break;
+    }
     try {
       logit(`开始第${tradeCount + 1}次买入...`);
       const buyResult = await buy(ORDER_PRICE_BUY, ORDER_VOLUME, ABORT_ON_PRICE_WARNING);
