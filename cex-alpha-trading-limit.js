@@ -39,11 +39,11 @@
 
 // === 全局参数配置 ===
 /** 买入价格（建议略低于市价，单位：币种） */
-const ORDER_PRICE_BUY = 48.0137;
+const ORDER_PRICE_BUY = 48.0135;
 /** 卖出价格（建议略高于市价，单位：币种） */
-const ORDER_PRICE_SELL = 48.0138;
+const ORDER_PRICE_SELL = 48.014;
 /** 每次买/卖的数量（单位：币种） */
-const ORDER_VOLUME = 90;
+const ORDER_VOLUME = 390;
 /** 最大刷单轮数（即买入+卖出为一轮） */
 const MAX_TRADES = 10;
 /** 单笔订单最大等待成交时间（毫秒），超时未成交则提示人工干预。*/
@@ -217,16 +217,31 @@ function checkOrderStatus() {
   if (orderTab) orderTab.click();
   if (limitTab) limitTab.click();
   return new Promise((resolve, reject) => {
+    let finished = false;
+    let timeoutId = null;
     const checkOrder = () => {
-      const tbody = document.querySelector('.bn-web-table-tbody');
-      if (tbody && tbody.children && tbody.children.length > 1) {
-        setTimeout(checkOrder, 1000);
-      } else {
+      if (finished) return;
+      // 检查“无进行中的订单”提示
+      const noOrderTip = Array.from(document.querySelectorAll('div.text-TertiaryText'))
+        .find(div => div.textContent.includes('无进行中的订单'));
+      if (noOrderTip) {
+        finished = true;
+        if (timeoutId) clearTimeout(timeoutId);
         resolve({status: 'completed'});
+        return;
+      }
+      // 兼容旧逻辑（如有表格）
+      const tbody = document.querySelector('.bn-web-table-tbody');
+      if (tbody && tbody.children && tbody.children.length > 0) {
+        setTimeout(checkOrder, 1000 + Math.random() * 2000); // 1~3秒随机延迟
+      } else {
+        setTimeout(checkOrder, 1000 + Math.random() * 2000); // 1~3秒随机延迟
       }
     };
-    setTimeout(checkOrder, 1000);
-    setTimeout(() => {
+    setTimeout(checkOrder, 1000 + Math.random() * 2000);
+    timeoutId = setTimeout(() => {
+      if (finished) return;
+      finished = true;
       logit('订单超时未成交');
       alert('订单可能无法正常成交,请人工检查并调整价格');
       resolve({
