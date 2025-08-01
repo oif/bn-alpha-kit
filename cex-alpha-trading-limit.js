@@ -48,7 +48,7 @@ let ORDER_PRICE_BUY = 48.004839;
 /** 卖出价格（建议略高于市价，单位：币种） */
 let ORDER_PRICE_SELL = 48.0048361;
 /** 每次买/卖的数量（单位：币种） */
-const ORDER_VOLUME = 1300;
+const ORDER_VOLUME = 10;
 /** 最大刷单轮数（即买入+卖出为一轮） */
 const MAX_TRADES = 13;
 /** 单笔订单最大等待成交时间（毫秒），超时未成交则提示人工干预。*/
@@ -59,7 +59,7 @@ const ABORT_ON_PRICE_WARNING = false;
 const ENABLE_DYNAMIC_PRICING = false;
 /** 动态价格偏移量（买入价格 = 分布最多价格 + 偏移量，卖出价格 = 分布最多价格 - 偏移量） */
 /** 如果给 0 则代表在分布价格上不加价也不减价，但可能会出手比较慢 */
-const PRICE_OFFSET = 0.0000000;
+const PRICE_OFFSET = 0.00000000;
 
 // === 强制中断支持 ===
 let stopTrading = false;
@@ -428,80 +428,139 @@ async function buy(price, volume, abortOnPriceWarning = false) {
 }
 
 /**
- * 从成交记录中获取最新价格
- * @returns {Promise<{buyPrice: number, sellPrice: number}|null>}
+ * 从成交记录中获取最新价格，分别计算买入和卖出价格
+ * @returns {Promise<{buyPrice: number, sellPrice: number, error?: string}|null>}
  */
 async function getDynamicPrices() {
   try {
     // 等待成交记录区域加载
     await waitForElement('.ReactVirtualized__Grid', null, null, 5, 1000, 500);
     
-    // 获取成交记录中的所有价格
-    const priceElements = document.querySelectorAll('.ReactVirtualized__Grid .flex-1[style*="color: var(--color-Buy)"], .ReactVirtualized__Grid .flex-1[style*="color: var(--color-Sell)"]');
+    // 分别获取买入和卖出的价格元素
+    const buyPriceElements = document.querySelectorAll('.ReactVirtualized__Grid .flex-1[style*="color: var(--color-Buy)"]');
+    const sellPriceElements = document.querySelectorAll('.ReactVirtualized__Grid .flex-1[style*="color: var(--color-Sell)"]');
     
-    if (priceElements.length === 0) {
+    if (buyPriceElements.length === 0 && sellPriceElements.length === 0) {
       logit("未找到成交记录价格元素");
-      return null;
+      return { error: "未找到成交记录价格元素" };
     }
     
-    const prices = [];
-    priceElements.forEach(el => {
+    // 分别处理买入和卖出价格
+    const buyPrices = [];
+    const sellPrices = [];
+    
+    // 处理买入价格
+    buyPriceElements.forEach(el => {
       const priceText = el.textContent.trim();
       const price = parseFloat(priceText);
       if (!isNaN(price)) {
-        prices.push(price);
+        buyPrices.push(price);
       }
     });
     
-    if (prices.length === 0) {
+    // 处理卖出价格
+    sellPriceElements.forEach(el => {
+      const priceText = el.textContent.trim();
+      const price = parseFloat(priceText);
+      if (!isNaN(price)) {
+        sellPrices.push(price);
+      }
+    });
+    
+    if (buyPrices.length === 0 && sellPrices.length === 0) {
       logit("无法解析成交记录中的价格");
-      return null;
+      return { error: "无法解析成交记录中的价格" };
     }
     
-    // 获取最新的价格来计算分布最多的价格
-    const recentPrices = prices.slice(0, Math.min(20, prices.length));
+    // 分别计算买入和卖出的分布最多价格
+    let buyPrice = ORDER_PRICE_BUY; // 默认使用配置的买入价格
+    let sellPrice = ORDER_PRICE_SELL; // 默认使用配置的卖出价格
     
-    // 计算价格分布，找到出现次数最多的价格
-    const priceCount = {};
-    recentPrices.forEach(price => {
-      // 将价格四舍五入到7位小数，避免浮点数精度问题
-      const roundedPrice = Math.round(price * 10000000) / 10000000;
-      priceCount[roundedPrice] = (priceCount[roundedPrice] || 0) + 1;
-    });
-    
-    // 找到出现次数最多的价格
-    let mostFrequentPrice = null;
-    let maxCount = 0;
-    for (const [price, count] of Object.entries(priceCount)) {
-      if (count > maxCount) {
-        maxCount = count;
-        mostFrequentPrice = parseFloat(price);
+    // 计算买入价格分布
+    if (buyPrices.length > 0) {
+      const recentBuyPrices = buyPrices.slice(0, Math.min(20, buyPrices.length));
+      const buyPriceCount = {};
+      recentBuyPrices.forEach(price => {
+        const roundedPrice = Math.round(price * 100000000) / 100000000;
+        buyPriceCount[roundedPrice] = (buyPriceCount[roundedPrice] || 0) + 1;
+      });
+      
+      let mostFrequentBuyPrice = null;
+      let maxBuyCount = 0;
+      for (const [price, count] of Object.entries(buyPriceCount)) {
+        if (count > maxBuyCount) {
+          maxBuyCount = count;
+          mostFrequentBuyPrice = parseFloat(price);
+        }
+      }
+      
+      if (mostFrequentBuyPrice) {
+        mostFrequentBuyPrice = Math.round(mostFrequentBuyPrice * 100000000) / 100000000;
+        buyPrice = Math.round((mostFrequentBuyPrice + PRICE_OFFSET) * 100000000) / 100000000;
+        logit(`买入价格计算 - 分布最多买入价格: ${mostFrequentBuyPrice} (出现${maxBuyCount}次), 最终买入价格: ${buyPrice}`);
       }
     }
     
-    // 确保 mostFrequentPrice 保持完整精度
-    mostFrequentPrice = Math.round(mostFrequentPrice * 10000000) / 10000000;
-    
-    if (!mostFrequentPrice) {
-      logit("无法确定分布最多的价格，使用最新价格");
-      mostFrequentPrice = recentPrices[0];
+    // 计算卖出价格分布
+    if (sellPrices.length > 0) {
+      const recentSellPrices = sellPrices.slice(0, Math.min(20, sellPrices.length));
+      const sellPriceCount = {};
+      recentSellPrices.forEach(price => {
+        const roundedPrice = Math.round(price * 100000000) / 100000000;
+        sellPriceCount[roundedPrice] = (sellPriceCount[roundedPrice] || 0) + 1;
+      });
+      
+      let mostFrequentSellPrice = null;
+      let maxSellCount = 0;
+      for (const [price, count] of Object.entries(sellPriceCount)) {
+        if (count > maxSellCount) {
+          maxSellCount = count;
+          mostFrequentSellPrice = parseFloat(price);
+        }
+      }
+      
+      if (mostFrequentSellPrice) {
+        mostFrequentSellPrice = Math.round(mostFrequentSellPrice * 100000000) / 100000000;
+        sellPrice = Math.round((mostFrequentSellPrice - PRICE_OFFSET) * 100000000) / 100000000;
+        logit(`卖出价格计算 - 分布最多卖出价格: ${mostFrequentSellPrice} (出现${maxSellCount}次), 最终卖出价格: ${sellPrice}`);
+      }
     }
     
-    // 计算买入和卖出价格（买入稍高确保成交，卖出稍低确保成交）
-    const buyPrice = Math.round((mostFrequentPrice + PRICE_OFFSET) * 10000000) / 10000000;
-    const sellPrice = Math.round((mostFrequentPrice - PRICE_OFFSET) * 10000000) / 10000000;
+    // 价格异常检测
+    const priceDiff = Math.abs(buyPrice - sellPrice);
+    const priceRatio = priceDiff / Math.min(buyPrice, sellPrice);
     
-    // 调试输出，检查计算过程
-    logit(`调试 - 基准价格: ${mostFrequentPrice}, 偏移量: ${PRICE_OFFSET}`);
-    logit(`调试 - 买入计算: ${mostFrequentPrice} - ${PRICE_OFFSET} = ${mostFrequentPrice - PRICE_OFFSET}`);
-    logit(`调试 - 卖出计算: ${mostFrequentPrice} + ${PRICE_OFFSET} = ${mostFrequentPrice + PRICE_OFFSET}`);
+    // 如果价格差异过大（超过1%）或价格为0或负数，认为异常
+    if (buyPrice <= 0 || sellPrice <= 0) {
+      const errorMsg = `价格异常：买入价格=${buyPrice}, 卖出价格=${sellPrice}`;
+      logit(errorMsg);
+      return { error: errorMsg };
+    }
     
-    logit(`动态价格计算完成 - 分布最多价格: ${mostFrequentPrice} (出现${maxCount}次), 买入价格: ${buyPrice}, 卖出价格: ${sellPrice}`);
+    if (priceRatio > 0.01) {
+      const errorMsg = `价格差异过大：买入价格=${buyPrice}, 卖出价格=${sellPrice}, 差异比例=${(priceRatio * 100).toFixed(2)}%`;
+      logit(errorMsg);
+      return { error: errorMsg };
+    }
+    
+    // 检查价格是否与配置价格差异过大（超过10%）
+    const buyPriceDiff = Math.abs(buyPrice - ORDER_PRICE_BUY) / ORDER_PRICE_BUY;
+    const sellPriceDiff = Math.abs(sellPrice - ORDER_PRICE_SELL) / ORDER_PRICE_SELL;
+    
+    if (buyPriceDiff > 0.1 || sellPriceDiff > 0.1) {
+      const errorMsg = `动态价格与配置价格差异过大：买入价格=${buyPrice} (配置=${ORDER_PRICE_BUY}), 卖出价格=${sellPrice} (配置=${ORDER_PRICE_SELL})`;
+      logit(errorMsg);
+      return { error: errorMsg };
+    }
+    
+    // 调试输出
+    logit(`调试 - 买入偏移量: +${PRICE_OFFSET}, 卖出偏移量: -${PRICE_OFFSET}`);
+    logit(`动态价格计算完成 - 买入价格: ${buyPrice}, 卖出价格: ${sellPrice}`);
     
     return { buyPrice, sellPrice };
   } catch (error) {
     logit("获取动态价格失败:", error);
-    return null;
+    return { error: `获取动态价格失败: ${error.message}` };
   }
 }
 
@@ -597,4 +656,3 @@ async function startTrading() {
 
 // === 启动自动交易 ===
 startTrading();
-
