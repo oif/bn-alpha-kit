@@ -60,6 +60,8 @@ const ENABLE_DYNAMIC_PRICING = false;
 /** 动态价格偏移量（买入价格 = 分布最多价格 + 偏移量，卖出价格 = 分布最多价格 - 偏移量） */
 /** 如果给 0 则代表在分布价格上不加价也不减价，但可能会出手比较慢 */
 const PRICE_OFFSET = 0.00000000;
+/** 24 小时成交量最低要求（单位：M）不推荐刷成交量太低的币，潜在大波动 */
+const MIN_VOLUME_M = 500;
 
 // === 强制中断支持 ===
 let stopTrading = false;
@@ -581,9 +583,97 @@ async function sell(price, volume, abortOnPriceWarning = false) {
 }
 
 /**
+ * 检查24h成交量是否足够，不足500M则不刷单
+ * @returns {Promise<boolean>} 成交量是否足够
+ */
+async function checkVolumeBeforeTrading() {
+  try {
+    // 等待成交量元素加载
+    const volumeElement = await waitForElement(
+      () => {
+        const elements = document.querySelectorAll('div.text-TertiaryText');
+        return Array.from(elements).find(el => el.textContent.includes('24h成交量'));
+      },
+      null,
+      null,
+      5,
+      1000,
+      500
+    );
+    
+    if (!volumeElement) {
+      logit("未找到24h成交量元素");
+      return false;
+    }
+    
+    // 获取成交量数值
+    const volumeText = volumeElement.nextElementSibling?.textContent;
+    if (!volumeText) {
+      logit("未找到成交量数值");
+      return false;
+    }
+    
+    logit(`检测到24h成交量: ${volumeText}`);
+    
+    // 解析成交量数值
+    const match = volumeText.match(/\$([\d.]+)([KMBT])?/);
+    if (!match) {
+      logit("无法解析成交量格式");
+      return false;
+    }
+    
+    const value = parseFloat(match[1]);
+    const unit = match[2] || '';
+    
+    // 转换为M单位进行比较
+    let volumeInM = 0;
+    switch (unit) {
+      case 'T':
+        volumeInM = value * 1000000; // 1T = 1,000,000M
+        break;
+      case 'B':
+        volumeInM = value * 1000; // 1B = 1,000M
+        break;
+      case 'M':
+        volumeInM = value;
+        break;
+      case 'K':
+        volumeInM = value / 1000; // 1K = 0.001M
+        break;
+      default:
+        volumeInM = value / 1000000; // 假设无单位时为美元，转换为M
+        break;
+    }
+    
+    logit(`成交量转换为M单位: ${volumeInM}M`);
+    
+    if (volumeInM < MIN_VOLUME_M) {
+      alert(`24 小时成交量低于 ${MIN_VOLUME_M}M (当前: ${volumeInM}M)，检查未通过，停止自动刷单`);
+      return false;
+    }
+    
+    logit(`成交量充足 (${volumeInM}M)，可以开始刷单`);
+    return true;
+  } catch (error) {
+    logit("检查成交量时出错:", error);
+    return false;
+  }
+}
+
+/**
  * 主交易循环，自动买入卖出刷交易量
  */
 async function startTrading() {
+  // 开始前检查成交量
+  const volumeOk = await checkVolumeBeforeTrading();
+  if (!volumeOk) {
+    logit("成交量检查未通过，停止自动刷单");
+    return;
+  }
+  
+  // 成交量检查通过，弹窗提示开始刷单
+  logit("成交量检查通过，开始自动刷单");
+  
   let tradeCount = 0;
   while (tradeCount < MAX_TRADES) {
     if (stopTrading) {
@@ -599,7 +689,7 @@ async function startTrading() {
       if (ENABLE_DYNAMIC_PRICING) {
         logit("启用动态价格设定，正在获取最新价格...");
         const dynamicPrices = await getDynamicPrices();
-        if (dynamicPrices) {
+        if (dynamicPrices && !dynamicPrices.error) {
           currentBuyPrice = dynamicPrices.buyPrice;
           currentSellPrice = dynamicPrices.sellPrice;
           logit(`第${tradeCount + 1}轮使用动态价格 - 买入: ${currentBuyPrice}, 卖出: ${currentSellPrice}`);
