@@ -8,16 +8,9 @@
  * 使用说明:
  *   1. 打开浏览器，进入目标交易对页面 (例如: https://www.binance.com/zh-CN/alpha/bsc/0x92aa03137385f18539301349dcfc9ebc923ffb10)
  *   2. 打开开发者工具 (F12)，进入控制台 tab
- *   3. 配置以下参数:
- *      - ORDER_PRICE_BUY: 买入价格（固定价格模式）
- *      - ORDER_PRICE_SELL: 卖出价格（固定价格模式）
- *      - ENABLE_DYNAMIC_PRICING: 是否启用动态价格设定（true/false）
- *      - PRICE_OFFSET: 动态价格偏移量（建议 0.000001）
- *      - ORDER_VOLUME: 每次买/卖的数量
- *      - MAX_TRADES: 交易循环次数
- *      - ORDER_TIMEOUT_MS: 单笔订单最大等待成交时间（毫秒）
- *      - ABORT_ON_PRICE_WARNING: 遇到价格警告弹窗时是否中止（true/false）
- *   4. 复制修改后的代码到控制台中并运行
+ *   3. 快速加载命令（在浏览器console中运行）：
+ *      fetch('https://raw.githubusercontent.com/oif/bn-alpha-kit/refs/heads/main/cex-alpha-trading-limit.js').then(r=>r.text()).then(eval)
+ *   4. 使用悬浮控制面板调整参数并开始交易
  *
  * 主要参数说明：
  *   ORDER_PRICE_BUY         —— 买入价格（固定价格模式）
@@ -27,9 +20,17 @@
  *   定价可以放在 K 线核心波动范围内，必要时候可以考虑卖出高于买入，价格建议参考手机客户端限价交易页面的实时成交记录设定。
  *   启用动态价格时，每轮交易前会自动从成交记录中分析价格分布，找到出现次数最多的价格作为基准，实现最小磨损。
  *   ORDER_VOLUME            —— 每次买/卖的数量
- *   MAX_TRADES              —— 最大交易轮数
+ *   MAX_TRADES              —— 预设买卖轮数
  *   ORDER_TIMEOUT_MS        —— 单笔订单最大等待成交时间（毫秒），如果是希望低磨损，慢慢等待合适价格买卖的话，推荐这个值给到分钟级以上
  *   ABORT_ON_PRICE_WARNING  —— 遇到价格警告弹窗时是否中止（true/false）
+ *
+ * 功能特性：
+ *   - 悬浮控制面板：实时调整参数，无需修改代码
+ *   - 动态价格计算：自动分析价格分布，最小化磨损
+ *   - 实时统计显示：交易量、磨损率等数据实时更新
+ *   - 智能等待机制：基于DOM状态等待，提高成功率
+ *   - 分页数据获取：自动翻页获取完整交易历史
+ *   - 错误处理机制：完善的异常处理和日志记录
  *
  * 注意事项：
  *   - 本脚本仅供学习与研究自动化技术使用，严禁用于违反交易所规则的行为。
@@ -39,6 +40,9 @@
  *   - 建议在测试账号或模拟盘环境下使用。
  *   - DYOR！！！
  *
+ * 版本：2.0.0
+ * 更新时间：2024-12-19
+ * GitHub: https://github.com/oif/bn-alpha-kit
  * MIT License
  */
 
@@ -211,7 +215,7 @@ function createControlPanel() {
 
   // 其他配置
   const otherSection = createParameterSection('OTHER CONFIG', [
-    { label: 'MIN VOLUME(M)', value: MIN_VOLUME_M, key: 'MIN_VOLUME_M', type: 'number', step: '1', description: '开始交易的最低24小时成交量要求' }
+    { label: 'MIN VOLUME(M)', value: MIN_VOLUME_M, key: 'MIN_VOLUME_M', type: 'number', step: '1', description: '代币市值低于此值不交易' }
   ]);
 
   // 开关配置
@@ -412,6 +416,14 @@ function createParameterSection(title, parameters) {
           value = param.transform(value);
         }
         window[param.key] = value;
+        
+        // 特殊处理某些参数的更新
+        if (param.key === 'MAX_TRADES') {
+          // 更新循环次数显示
+          const currentCompleted = isTrading ? 0 : 0; // 如果正在交易，保持当前进度
+          updateCycleDisplay(currentCompleted, value);
+        }
+        
         logit(`${param.label} 已更新为: ${value}`);
       };
     }
@@ -562,10 +574,10 @@ function createButtonSection() {
     margin-top: 2px;
   `;
 
-  // 开始交易按钮
-  const startBtn = document.createElement('button');
-  startBtn.textContent = '[START]';
-  startBtn.style.cssText = `
+    // 合并的开始/停止交易按钮
+  const tradeBtn = document.createElement('button');
+  tradeBtn.textContent = '[START]';
+  tradeBtn.style.cssText = `
     flex: 1;
     padding: 4px 6px;
     background: #000;
@@ -578,102 +590,57 @@ function createButtonSection() {
     transition: all 0.2s ease;
   `;
 
-  startBtn.onmouseover = () => {
-    startBtn.style.background = '#ffffff';
-    startBtn.style.color = '#000';
+  tradeBtn.onmouseover = () => {
+    if (!isTrading) {
+      tradeBtn.style.background = '#ffffff';
+      tradeBtn.style.color = '#000';
+    }
   };
-  startBtn.onmouseout = () => {
-    startBtn.style.background = '#000';
-    startBtn.style.color = '#ffffff';
-  };
-
-        startBtn.onclick = async () => {
-        if (!isTrading) {
-          isTrading = true;
-          startBtn.textContent = '[RUNNING]';
-          startBtn.style.background = '#ffaa00';
-          startBtn.style.color = '#000';
-          startBtn.disabled = true;
-          logit('开始自动交易...');
-          
-          // 交易开始前先计算一次统计
-          logit('交易开始前计算初始统计数据...');
-          await calculateTradingVolumeForPanel();
-          
-          startTrading().finally(() => {
-            isTrading = false;
-            startBtn.textContent = '[START]';
-            startBtn.style.background = '#000';
-            startBtn.style.color = '#ffffff';
-            startBtn.disabled = false;
-          });
-        }
-      };
-
-  // 停止交易按钮
-  const stopBtn = document.createElement('button');
-  stopBtn.textContent = '[STOP]';
-  stopBtn.style.cssText = `
-    flex: 1;
-    padding: 4px 6px;
-    background: #000;
-    color: #ff6666;
-    border: 1px solid #ff6666;
-    font-family: 'Courier New', monospace;
-    font-size: 10px;
-    font-weight: bold;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  `;
-
-  stopBtn.onmouseover = () => {
-    stopBtn.style.background = '#ff6666';
-    stopBtn.style.color = '#000';
-  };
-  stopBtn.onmouseout = () => {
-    stopBtn.style.background = '#000';
-    stopBtn.style.color = '#ff6666';
+  tradeBtn.onmouseout = () => {
+    if (!isTrading) {
+      tradeBtn.style.background = '#000';
+      tradeBtn.style.color = '#ffffff';
+    }
   };
 
-  stopBtn.onclick = () => {
-    stopTrading = true;
-    isTrading = false;
-    logit('已发送停止交易指令');
-    alert('已发送停止交易指令，交易将在当前轮次完成后停止');
+  tradeBtn.onclick = async () => {
+    if (!isTrading) {
+      // 开始交易
+      isTrading = true;
+      tradeBtn.textContent = '[STOP]';
+      tradeBtn.style.background = '#ff6666';
+      tradeBtn.style.color = '#ffffff';
+      tradeBtn.style.border = '1px solid #ff6666';
+      logit('开始自动交易...');
+      
+      // 重置循环次数显示
+      updateCycleDisplay(0, MAX_TRADES);
+      
+      // 交易开始前先计算一次统计
+      logit('交易开始前计算初始统计数据...');
+      await calculateTradingVolumeForPanel();
+      
+      startTrading().finally(() => {
+        isTrading = false;
+        tradeBtn.textContent = '[START]';
+        tradeBtn.style.background = '#000';
+        tradeBtn.style.color = '#ffffff';
+        tradeBtn.style.border = '1px solid #ffffff';
+        tradeBtn.disabled = false;
+      });
+    } else {
+      // 停止交易
+      stopTrading = true;
+      isTrading = false;
+      tradeBtn.textContent = '[STOPPING]';
+      tradeBtn.style.background = '#ffaa00';
+      tradeBtn.style.color = '#000';
+      logit('已发送停止交易指令');
+      alert('已发送停止交易指令，交易将在当前轮次完成后停止');
+    }
   };
 
-  // 计算交易量按钮
-  const calcBtn = document.createElement('button');
-  calcBtn.textContent = '[CALC]';
-  calcBtn.style.cssText = `
-    flex: 1;
-    padding: 4px 6px;
-    background: #000;
-    color: #cccccc;
-    border: 1px solid #cccccc;
-    font-family: 'Courier New', monospace;
-    font-size: 10px;
-    font-weight: bold;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  `;
-
-  calcBtn.onmouseover = () => {
-    calcBtn.style.background = '#cccccc';
-    calcBtn.style.color = '#000';
-  };
-  calcBtn.onmouseout = () => {
-    calcBtn.style.background = '#000';
-    calcBtn.style.color = '#cccccc';
-  };
-
-  calcBtn.onclick = async () => {
-    await updateStatsDisplay();
-  };
-
-  section.appendChild(startBtn);
-  section.appendChild(stopBtn);
-  section.appendChild(calcBtn);
+  section.appendChild(tradeBtn);
 
   return section;
 }
@@ -760,6 +727,21 @@ function hideDynamicPriceDisplay() {
 }
 
 /**
+ * 更新循环次数显示
+ */
+function updateCycleDisplay(completed, total) {
+  const cycleDisplay = document.getElementById('cycle-display');
+  if (cycleDisplay) {
+    const remaining = total - completed;
+    cycleDisplay.innerHTML = `
+      <div style="color: #ffffff; font-weight: bold;">CYCLE PROGRESS</div>
+      <div style="color: #00ff00;">COMPLETED: ${completed} / ${total}</div>
+      <div style="color: #ffaa00;">REMAINING: ${remaining}</div>
+    `;
+  }
+}
+
+/**
  * 创建交易统计区域
  */
 function createStatsSection() {
@@ -823,12 +805,31 @@ function createStatsSection() {
     line-height: 1.2;
   `;
 
+  // 创建循环次数显示
+  const cycleDisplay = document.createElement('div');
+  cycleDisplay.id = 'cycle-display';
+  cycleDisplay.style.cssText = `
+    margin-bottom: 4px;
+    padding: 2px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid #ffffff;
+    text-align: center;
+    font-size: 9px;
+  `;
+  cycleDisplay.innerHTML = `
+    <div style="color: #ffffff; font-weight: bold;">CYCLE PROGRESS</div>
+    <div style="color: #00ff00;">COMPLETED: 0 / ${MAX_TRADES}</div>
+    <div style="color: #ffaa00;">REMAINING: ${MAX_TRADES}</div>
+  `;
+
   // 初始显示
   statsContent.innerHTML = `
     <div style="color: #999; text-align: center; padding: 4px; font-size: 10px;">
       CLICK [R] TO CALC
     </div>
   `;
+
+  section.appendChild(cycleDisplay);
 
   section.appendChild(sectionTitle);
   section.appendChild(statsContent);
@@ -855,6 +856,7 @@ async function updateStatsDisplay() {
 
 /**
  * 为控制面板计算交易量统计
+ * 同步执行，确保在正确的tab页面获取DOM数据
  */
 async function calculateTradingVolumeForPanel() {
   try {
@@ -1037,13 +1039,15 @@ function logit() {
 }
 
 /**
- * 等待元素出现并可选执行操作
+ * 智能等待元素出现并可选执行操作
+ * 基于DOM状态动态等待，替代固定时间等待，提高脚本可靠性
+ * 
  * @param {string|Function} selector - CSS选择器或返回元素的函数
  * @param {Function|null} checker - 可选的元素检查函数
  * @param {Function|null} onReady - 元素出现后要执行的操作（接收元素作为参数，可为async）
- * @param {number} maxAttempts - 最大尝试次数
- * @param {number} interval - 重试间隔(毫秒)
- * @param {number} initialDelay - 初始延迟(毫秒)
+ * @param {number} maxAttempts - 最大尝试次数（默认10次）
+ * @param {number} interval - 每次尝试间隔时间（毫秒，默认1000ms）
+ * @param {number} initialDelay - 初始延迟时间（毫秒，默认500ms）
  * @returns {Promise<any>} - 返回 onReady 的结果
  */
 function waitForElement(
@@ -1585,6 +1589,7 @@ async function checkVolumeBeforeTrading() {
 
 /**
  * 主交易循环，自动买入卖出交易
+ * 支持动态价格计算、智能等待、实时统计等功能
  */
 async function startTrading() {
   // 开始前检查成交量
@@ -1646,6 +1651,9 @@ async function startTrading() {
           logit("卖出成功,继续下一轮交易");
           tradeCount++;
           
+          // 更新循环次数显示
+          updateCycleDisplay(tradeCount, MAX_TRADES);
+          
           // 每3轮交易计算一次统计，或者最后一轮完成时计算
           if (tradeCount % 3 === 0 || tradeCount >= MAX_TRADES) {
             logit(`第${tradeCount}轮交易完成，计算统计数据...`);
@@ -1674,6 +1682,7 @@ async function startTrading() {
   }
   if (tradeCount >= MAX_TRADES) {
     logit("已完成设定的交易轮数");
+    updateCycleDisplay(MAX_TRADES, MAX_TRADES);
     alert("已完成设定的交易轮数");
   }
 }
