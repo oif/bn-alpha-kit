@@ -71,6 +71,7 @@ let MIN_VOLUME_M = 500;
 let controlPanel = null;
 let isTrading = false;
 let currentDynamicPrices = { buyPrice: 0, sellPrice: 0 };
+let completedTrades = 0; // 跟踪已完成的交易轮数
 
 /**
  * 创建悬浮控制面板
@@ -415,12 +416,30 @@ function createParameterSection(title, parameters) {
         if (param.transform) {
           value = param.transform(value);
         }
-        window[param.key] = value;
+        
+        // 直接更新全局变量
+        if (param.key === 'ORDER_VOLUME') {
+          ORDER_VOLUME = value;
+        } else if (param.key === 'MAX_TRADES') {
+          MAX_TRADES = value;
+        } else if (param.key === 'ORDER_TIMEOUT_MS') {
+          ORDER_TIMEOUT_MS = value;
+        } else if (param.key === 'MIN_VOLUME_M') {
+          MIN_VOLUME_M = value;
+        } else if (param.key === 'ORDER_PRICE_BUY') {
+          ORDER_PRICE_BUY = value;
+        } else if (param.key === 'ORDER_PRICE_SELL') {
+          ORDER_PRICE_SELL = value;
+        } else if (param.key === 'PRICE_OFFSET') {
+          PRICE_OFFSET = value;
+        } else {
+          window[param.key] = value;
+        }
         
         // 特殊处理某些参数的更新
         if (param.key === 'MAX_TRADES') {
           // 更新循环次数显示
-          const currentCompleted = isTrading ? 0 : 0; // 如果正在交易，保持当前进度
+          const currentCompleted = isTrading ? completedTrades : 0; // 如果正在交易，保持当前进度
           updateCycleDisplay(currentCompleted, value);
         }
         
@@ -614,6 +633,7 @@ function createButtonSection() {
       logit('开始自动交易...');
       
       // 重置循环次数显示
+      completedTrades = 0;
       updateCycleDisplay(0, MAX_TRADES);
       
       // 交易开始前先计算一次统计
@@ -739,6 +759,8 @@ function updateCycleDisplay(completed, total) {
       <div style="color: #ffaa00;">REMAINING: ${remaining}</div>
     `;
   }
+  // 更新全局变量
+  completedTrades = completed;
 }
 
 /**
@@ -768,7 +790,7 @@ function createStatsSection() {
     align-items: center;
   `;
 
-  // 添加刷新按钮
+  // 添加刷新按钮（合并CALC功能）
   const refreshBtn = document.createElement('button');
   refreshBtn.textContent = '[R]';
   refreshBtn.style.cssText = `
@@ -881,8 +903,12 @@ async function calculateTradingVolumeForPanel() {
       return;
     }
 
-    // 等待tab切换完成，使用waitForElement等待表格加载
-    await waitForElement('table', null, null, 10, 1000, 1000);
+    // 等待tab切换完成，使用更可靠的等待方式
+    try {
+      await waitForElement('table', null, null, 10, 1000, 1000);
+    } catch (error) {
+      logit("等待表格加载超时，尝试继续执行:", error.message);
+    }
 
     // 同步获取所有交易数据
     const allTrades = await getAllTradesForVolumeCalc();
@@ -1808,44 +1834,102 @@ function parseTradeRowForVolumeCalc(row) {
       return null;
     }
     
-    const cells = row.querySelectorAll('.bn-web-table-cell');
-    if (cells.length < 11) {
-      logit(`DEBUG: 单元格数量不足，期望11个，实际${cells.length}个`);
+    // 尝试多种单元格选择器
+    let cells = row.querySelectorAll('.bn-web-table-cell');
+    if (cells.length === 0) {
+      cells = row.querySelectorAll('td');
+    }
+    if (cells.length === 0) {
+      cells = row.querySelectorAll('th');
+    }
+    
+    if (cells.length < 8) {
+      logit(`DEBUG: 单元格数量不足，期望至少8个，实际${cells.length}个`);
       return null;
     }
     
-    // 获取时间（第2列，索引1）
-    const timeText = cells[1]?.textContent?.trim();
+    // 获取时间（尝试多个位置）
+    let timeText = '';
+    for (let i = 0; i < Math.min(cells.length, 5); i++) {
+      const text = cells[i]?.textContent?.trim();
+      if (text && /^\d{4}-\d{2}-\d{2}/.test(text)) {
+        timeText = text;
+        break;
+      }
+    }
+    
     if (!timeText) {
       logit(`DEBUG: 时间文本为空`);
       return null;
     }
     
-    // 获取交易方向（第5列，索引4）
-    const directionElement = cells[4]?.querySelector('div');
-    const direction = directionElement?.textContent?.trim();
+    // 获取交易方向（尝试多个位置）
+    let direction = '';
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i];
+      const text = cell?.textContent?.trim();
+      if (text && (text.includes('买入') || text.includes('卖出'))) {
+        direction = text;
+        break;
+      }
+      // 也检查子元素
+      const subElement = cell?.querySelector('div');
+      if (subElement) {
+        const subText = subElement.textContent?.trim();
+        if (subText && (subText.includes('买入') || subText.includes('卖出'))) {
+          direction = subText;
+          break;
+        }
+      }
+    }
+    
     if (!direction) {
-      logit(`DEBUG: 交易方向为空，原始内容: ${cells[4]?.textContent}`);
+      logit(`DEBUG: 交易方向为空`);
       return null;
     }
     
-    // 获取已成交数量（第8列，索引7）
-    const filledText = cells[7]?.textContent?.trim();
+    // 获取已成交数量（尝试多个位置）
+    let filledText = '';
+    for (let i = 0; i < cells.length; i++) {
+      const text = cells[i]?.textContent?.trim();
+      if (text && /[\d.]+/.test(text) && !text.includes('USDT') && !text.includes('买入') && !text.includes('卖出')) {
+        filledText = text;
+        break;
+      }
+    }
+    
     if (!filledText) {
       logit(`DEBUG: 已成交数量为空`);
       return null;
     }
     
-    // 获取状态（第11列，索引10）
-    const statusElement = cells[10]?.querySelector('div');
-    const status = statusElement?.textContent?.trim();
+    // 获取状态（尝试多个位置）
+    let status = '';
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i];
+      const text = cell?.textContent?.trim();
+      if (text && text.includes('已成交')) {
+        status = text;
+        break;
+      }
+      // 也检查子元素
+      const subElement = cell?.querySelector('div');
+      if (subElement) {
+        const subText = subElement.textContent?.trim();
+        if (subText && subText.includes('已成交')) {
+          status = subText;
+          break;
+        }
+      }
+    }
+    
     if (!status) {
-      logit(`DEBUG: 状态为空，原始内容: ${cells[10]?.textContent}`);
+      logit(`DEBUG: 状态为空`);
       return null;
     }
     
     // 只处理已成交的订单（买入和卖出都处理）
-    if (status !== '已成交') {
+    if (!status.includes('已成交')) {
       logit(`DEBUG: 订单状态不是已成交: ${status}`);
       return null;
     }
@@ -1874,48 +1958,38 @@ function parseTradeRowForVolumeCalc(row) {
     
     logit(`DEBUG: 数量解析结果: ${volume}`);
     
-    // 尝试获取价格信息（从第7列，索引6，价格列）
+    // 尝试获取价格信息
     let price = 0;
     try {
-      const priceText = cells[6]?.textContent?.trim();
-      logit(`DEBUG: 价格原始文本: "${priceText}"`);
-      
-      if (priceText) {
-        const priceMatch = priceText.match(/[\d.]+/);
-        if (priceMatch) {
-          // 使用8位小数精度进行计算
-          price = Math.round(parseFloat(priceMatch[0]) * 100000000) / 100000000;
-          logit(`DEBUG: 价格解析结果: ${price}`);
-        } else {
-          logit(`DEBUG: 价格正则匹配失败`);
+      for (let i = 0; i < cells.length; i++) {
+        const text = cells[i]?.textContent?.trim();
+        if (text && /[\d.]+/.test(text) && text.includes('.')) {
+          const priceMatch = text.match(/[\d.]+/);
+          if (priceMatch) {
+            price = Math.round(parseFloat(priceMatch[0]) * 100000000) / 100000000;
+            logit(`DEBUG: 价格解析结果: ${price}`);
+            break;
+          }
         }
-      } else {
-        logit(`DEBUG: 价格文本为空`);
       }
     } catch (error) {
       logit(`DEBUG: 价格解析失败: ${error.message}`);
     }
     
-    // 获取成交额（从第10列，索引9，成交额列）
+    // 获取成交额
     let totalValue = 0;
     try {
-      const totalValueText = cells[9]?.textContent?.trim();
-      logit(`DEBUG: 成交额原始文本: "${totalValueText}"`);
-      
-      if (totalValueText) {
-        // 提取数字部分，包括小数点，去掉USDT等后缀
-        const totalValueMatch = totalValueText.match(/[\d,]+\.?\d*/);
-        if (totalValueMatch) {
-          // 使用更精确的浮点数处理，避免精度丢失
-          const cleanValue = totalValueMatch[0].replace(/,/g, '');
-          // 使用8位小数精度进行计算
-          totalValue = Math.round(parseFloat(cleanValue) * 100000000) / 100000000;
-          logit(`DEBUG: 成交额解析结果: ${totalValue} (原始: ${cleanValue})`);
-        } else {
-          logit(`DEBUG: 成交额正则匹配失败`);
+      for (let i = 0; i < cells.length; i++) {
+        const text = cells[i]?.textContent?.trim();
+        if (text && /[\d,]+\.?\d*/.test(text) && (text.includes('USDT') || text.includes(','))) {
+          const totalValueMatch = text.match(/[\d,]+\.?\d*/);
+          if (totalValueMatch) {
+            const cleanValue = totalValueMatch[0].replace(/,/g, '');
+            totalValue = Math.round(parseFloat(cleanValue) * 100000000) / 100000000;
+            logit(`DEBUG: 成交额解析结果: ${totalValue} (原始: ${cleanValue})`);
+            break;
+          }
         }
-      } else {
-        logit(`DEBUG: 成交额文本为空`);
       }
     } catch (error) {
       logit(`DEBUG: 成交额解析失败: ${error.message}`);
@@ -1950,8 +2024,12 @@ function parseTradeRowForVolumeCalc(row) {
 async function getCurrentPageTradesForVolumeCalc() {
   const trades = [];
   try {
-    // 等待表格行加载
-    await waitForElement('table tbody tr', null, null, 5, 500, 500);
+    // 等待表格行加载，使用更宽松的等待条件
+    try {
+      await waitForElement('table tbody tr', null, null, 5, 500, 500);
+    } catch (error) {
+      logit("等待表格行加载超时，尝试直接查找:", error.message);
+    }
     
     // 尝试多种表格选择器
     let rows = document.querySelectorAll('.bn-web-table-tbody .bn-web-table-row:not(.bn-web-table-measure-row)');
@@ -1968,6 +2046,12 @@ async function getCurrentPageTradesForVolumeCalc() {
       logit(`DEBUG: 使用 tbody tr 选择器，找到 ${rows.length} 行`);
     }
     
+    if (rows.length === 0) {
+      // 最后尝试查找任何包含数据的行
+      rows = document.querySelectorAll('tr');
+      logit(`DEBUG: 使用 tr 选择器，找到 ${rows.length} 行`);
+    }
+    
     logit(`DEBUG: 最终找到 ${rows.length} 行数据`);
     
     // 遍历每一行
@@ -1975,9 +2059,18 @@ async function getCurrentPageTradesForVolumeCalc() {
       // 检查行是否包含必要的单元格
       const cells = row.querySelectorAll('.bn-web-table-cell');
       
-      logit(`DEBUG: 第${index + 1}行 - 单元格数量: ${cells.length}`);
+      // 如果找不到标准单元格，尝试其他选择器
+      let actualCells = cells;
+      if (cells.length === 0) {
+        actualCells = row.querySelectorAll('td');
+      }
+      if (actualCells.length === 0) {
+        actualCells = row.querySelectorAll('th');
+      }
       
-      if (cells.length >= 11) {
+      logit(`DEBUG: 第${index + 1}行 - 单元格数量: ${actualCells.length}`);
+      
+      if (actualCells.length >= 8) { // 降低要求，至少8个单元格
         // 尝试解析这一行
         const tradeData = parseTradeRowForVolumeCalc(row);
         if (tradeData) {
@@ -2075,8 +2168,12 @@ async function clickNextPageForVolumeCalc() {
     nextButton.click();
     logit("已点击下一页");
     
-    // 等待页面加载，使用waitForElement等待表格行加载
-    await waitForElement('table tbody tr', null, null, 10, 1000, 1000);
+    // 等待页面加载，使用更宽松的等待条件
+    try {
+      await waitForElement('table tbody tr', null, null, 10, 1000, 1000);
+    } catch (error) {
+      logit("等待页面加载超时，尝试继续执行:", error.message);
+    }
     return true;
   } catch (error) {
     logit("点击下一页失败:", error);
@@ -2327,8 +2424,12 @@ async function getAllTradesForVolumeCalc() {
         break;
       }
       
-      // 等待页面加载完成，使用waitForElement等待表格行加载
-      await waitForElement('table tbody tr', null, null, 10, 1000, 1000);
+      // 等待页面加载完成，使用更宽松的等待条件
+      try {
+        await waitForElement('table tbody tr', null, null, 10, 1000, 1000);
+      } catch (error) {
+        logit("等待页面加载超时，尝试继续执行:", error.message);
+      }
       
       // 再次检查是否有下一页（防止页面加载后状态变化）
       if (!hasNextPageForVolumeCalc()) {
@@ -2357,7 +2458,7 @@ async function getAllTradesForVolumeCalc() {
       // 每翻几页后稍作停顿，避免被风控
       if (pageCount % 3 === 0) {
         logit("已翻3页，稍作停顿...");
-        await waitForElement('table tbody tr', null, null, 5, 500, 1000);
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
     
