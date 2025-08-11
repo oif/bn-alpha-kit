@@ -71,6 +71,8 @@ let MIN_VOLUME_M = 500;
 let controlPanel = null;
 let isTrading = false;
 let currentDynamicPrices = { buyPrice: 0, sellPrice: 0 };
+let completedTrades = 0; // 跟踪已完成的交易轮数
+let paginationDebugInfo = ''; // 分页调试信息
 
 /**
  * 创建悬浮控制面板
@@ -232,6 +234,9 @@ function createControlPanel() {
   // 交易统计区域
   const statsSection = createStatsSection();
 
+  // 分页调试区域
+  const paginationDebugSection = createPaginationDebugSection();
+
   // 创建网格容器
   const gridContainer = document.createElement('div');
   gridContainer.className = 'grid-container';
@@ -275,6 +280,7 @@ function createControlPanel() {
   rightColumn.appendChild(buttonSection);
   rightColumn.appendChild(dynamicPriceSection);
   rightColumn.appendChild(statsSection);
+  rightColumn.appendChild(paginationDebugSection);
   
   gridContainer.appendChild(leftColumn);
   gridContainer.appendChild(middleColumn);
@@ -301,6 +307,81 @@ function createControlPanel() {
   }
 
   logit('悬浮控制面板已创建');
+  
+  // 添加全局测试函数
+  window.testPagination = async function() {
+    logit("开始测试分页功能...");
+    debugPaginationStatus();
+    updatePaginationDebugDisplay();
+    
+    if (hasNextPageForVolumeCalc()) {
+      logit("找到下一页，尝试翻页...");
+      const result = await clickNextPageForVolumeCalc();
+      logit(`翻页结果: ${result}`);
+      
+      // 等待并检查结果
+      setTimeout(() => {
+        debugPaginationStatus();
+        updatePaginationDebugDisplay();
+      }, 3000);
+    } else {
+      logit("没有下一页了");
+    }
+  };
+  
+  logit('已添加全局测试函数: testPagination()');
+  
+  // 添加表格解析测试函数
+  window.testTableParsing = function() {
+    logit("开始测试表格解析...");
+    
+    // 先显示所有行的信息
+    const allRows = document.querySelectorAll('.bn-web-table-tbody tr, table tbody tr, tbody tr');
+    logit(`总共找到 ${allRows.length} 行（包括测量行）`);
+    
+    allRows.forEach((row, index) => {
+      const isMeasureRow = row.classList.contains('bn-web-table-measure-row') || row.getAttribute('aria-hidden') === 'true';
+      const rowType = isMeasureRow ? '测量行' : '数据行';
+      logit(`行${index + 1}: ${rowType} - aria-hidden="${row.getAttribute('aria-hidden')}" - class="${row.className}"`);
+    });
+    
+    // 查找表格行，排除测量行
+    let rows = document.querySelectorAll('.bn-web-table-tbody .bn-web-table-row:not(.bn-web-table-measure-row)');
+    if (rows.length === 0) {
+      rows = document.querySelectorAll('table tbody tr:not(.bn-web-table-measure-row)');
+    }
+    if (rows.length === 0) {
+      rows = document.querySelectorAll('tbody tr:not(.bn-web-table-measure-row)');
+    }
+    
+    logit(`找到 ${rows.length} 行数据（已排除测量行）`);
+    
+    if (rows.length > 0) {
+      // 测试解析第一行
+      const firstRow = rows[0];
+      logit("测试解析第一行:");
+      
+      // 先显示第一行的所有单元格内容
+      const cells = firstRow.querySelectorAll('.bn-web-table-cell');
+      logit(`第一行有 ${cells.length} 个单元格`);
+      cells.forEach((cell, index) => {
+        const text = cell.textContent?.trim() || '';
+        logit(`单元格${index + 1}: "${text}"`);
+      });
+      
+      const result = parseTradeRowForVolumeCalc(firstRow);
+      
+      if (result) {
+        logit("解析成功:", result);
+      } else {
+        logit("解析失败");
+      }
+    } else {
+      logit("没有找到有效的数据行");
+    }
+  };
+  
+  logit('已添加全局测试函数: testTableParsing()');
 }
 
 /**
@@ -415,12 +496,30 @@ function createParameterSection(title, parameters) {
         if (param.transform) {
           value = param.transform(value);
         }
-        window[param.key] = value;
+        
+        // 直接更新全局变量
+        if (param.key === 'ORDER_VOLUME') {
+          ORDER_VOLUME = value;
+        } else if (param.key === 'MAX_TRADES') {
+          MAX_TRADES = value;
+        } else if (param.key === 'ORDER_TIMEOUT_MS') {
+          ORDER_TIMEOUT_MS = value;
+        } else if (param.key === 'MIN_VOLUME_M') {
+          MIN_VOLUME_M = value;
+        } else if (param.key === 'ORDER_PRICE_BUY') {
+          ORDER_PRICE_BUY = value;
+        } else if (param.key === 'ORDER_PRICE_SELL') {
+          ORDER_PRICE_SELL = value;
+        } else if (param.key === 'PRICE_OFFSET') {
+          PRICE_OFFSET = value;
+        } else {
+          window[param.key] = value;
+        }
         
         // 特殊处理某些参数的更新
         if (param.key === 'MAX_TRADES') {
           // 更新循环次数显示
-          const currentCompleted = isTrading ? 0 : 0; // 如果正在交易，保持当前进度
+          const currentCompleted = isTrading ? completedTrades : 0; // 如果正在交易，保持当前进度
           updateCycleDisplay(currentCompleted, value);
         }
         
@@ -614,6 +713,7 @@ function createButtonSection() {
       logit('开始自动交易...');
       
       // 重置循环次数显示
+      completedTrades = 0;
       updateCycleDisplay(0, MAX_TRADES);
       
       // 交易开始前先计算一次统计
@@ -643,6 +743,66 @@ function createButtonSection() {
   section.appendChild(tradeBtn);
 
   return section;
+}
+
+/**
+ * 创建分页调试信息显示区域
+ */
+function createPaginationDebugSection() {
+  const section = document.createElement('div');
+  section.style.cssText = `
+    margin-top: 2px;
+    padding: 3px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid #ffffff;
+    display: none;
+  `;
+  section.id = 'pagination-debug-section';
+
+  const sectionTitle = document.createElement('div');
+  sectionTitle.textContent = '[ PAGINATION DEBUG ]';
+  sectionTitle.style.cssText = `
+    font-weight: bold;
+    margin-bottom: 3px;
+    color: #ffffff;
+    font-size: 10px;
+    text-align: center;
+    letter-spacing: 1px;
+  `;
+
+  const debugContent = document.createElement('div');
+  debugContent.id = 'pagination-debug-content';
+  debugContent.style.cssText = `
+    font-family: 'Courier New', monospace;
+    font-size: 8px;
+    line-height: 1.1;
+    text-align: left;
+    color: #cccccc;
+    max-height: 100px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  `;
+  debugContent.innerHTML = `
+    <div>点击[DEBUG]按钮查看分页状态...</div>
+  `;
+
+  section.appendChild(sectionTitle);
+  section.appendChild(debugContent);
+
+  return section;
+}
+
+/**
+ * 更新分页调试信息显示
+ */
+function updatePaginationDebugDisplay() {
+  const section = document.getElementById('pagination-debug-section');
+  const content = document.getElementById('pagination-debug-content');
+  
+  if (section && content) {
+    section.style.display = 'block';
+    content.textContent = paginationDebugInfo || '暂无调试信息';
+  }
 }
 
 /**
@@ -739,6 +899,8 @@ function updateCycleDisplay(completed, total) {
       <div style="color: #ffaa00;">REMAINING: ${remaining}</div>
     `;
   }
+  // 更新全局变量
+  completedTrades = completed;
 }
 
 /**
@@ -768,7 +930,7 @@ function createStatsSection() {
     align-items: center;
   `;
 
-  // 添加刷新按钮
+  // 添加刷新按钮（合并CALC功能）
   const refreshBtn = document.createElement('button');
   refreshBtn.textContent = '[R]';
   refreshBtn.style.cssText = `
@@ -859,127 +1021,8 @@ async function updateStatsDisplay() {
  * 同步执行，确保在正确的tab页面获取DOM数据
  */
 async function calculateTradingVolumeForPanel() {
-  try {
-    const statsContent = document.getElementById('stats-content');
-    if (!statsContent) return;
-
-    // 显示计算中状态
-    statsContent.innerHTML = `
-      <div style="color: #ffff00; text-align: center; padding: 4px; font-size: 10px;">
-        GETTING DATA...
-      </div>
-    `;
-
-    // 同步点击委托历史标签页
-    const tabClicked = await clickOrderHistoryTabForVolumeCalc();
-    if (!tabClicked) {
-      statsContent.innerHTML = `
-        <div style="color: #ff6666; text-align: center; padding: 4px; font-size: 10px;">
-          NO ACCESS TO HISTORY
-        </div>
-      `;
-      return;
-    }
-
-    // 等待tab切换完成，使用waitForElement等待表格加载
-    await waitForElement('table', null, null, 10, 1000, 1000);
-
-    // 同步获取所有交易数据
-    const allTrades = await getAllTradesForVolumeCalc();
-    
-    if (allTrades.length === 0) {
-      statsContent.innerHTML = `
-        <div style="color: #ff6666; text-align: center; padding: 4px; font-size: 10px;">
-          NO TRADES FOUND
-        </div>
-      `;
-      return;
-    }
-
-    // 计算每日交易量
-    const dailyStats = calculateDailyVolumeForVolumeCalc(allTrades);
-
-    // 获取今日日期
-    const now = new Date();
-    let today;
-    if (now.getHours() < 8) {
-      today = new Date(now);
-      today.setDate(today.getDate() - 1);
-    } else {
-      today = new Date(now);
-    }
-    const todayKey = today.toISOString().split('T')[0];
-
-    // 计算今日统计
-    const todayTrades = Object.keys(dailyStats).length > 0 && dailyStats[todayKey] ? dailyStats[todayKey].trades : [];
-    const todayBuyTrades = Object.keys(dailyStats).length > 0 && dailyStats[todayKey] ? dailyStats[todayKey].buyTrades : [];
-    const todayTotalVolume = todayBuyTrades.reduce((sum, trade) => Math.round((sum + trade.volume) * 100000000) / 100000000, 0);
-    const todayTotalValue = todayBuyTrades.reduce((sum, trade) => Math.round((sum + trade.totalValue) * 100000000) / 100000000, 0);
-    const todayAvgValue = todayBuyTrades.length > 0 ? Math.round((todayTotalValue / todayBuyTrades.length) * 100000000) / 100000000 : 0;
-
-    // 获取今日的买入卖出统计
-    const todayStats = dailyStats[todayKey] || {};
-    const todayBuyCount = todayStats.buyTrades ? todayStats.buyTrades.length : 0;
-    const todaySellCount = todayStats.sellTrades ? todayStats.sellTrades.length : 0;
-    const todayWearLoss = todayStats.wearLoss || 0;
-    const todayWearLossPercentage = todayStats.wearLossPercentage || 0;
-
-    // 更新显示
-    statsContent.innerHTML = `
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; font-size: 10px;">
-        <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
-          <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">${todayKey}</div>
-          <div style="display: flex; justify-content: space-between;">
-            <span style="color: #ffffff;">BUY:</span>
-            <span style="color: #ffffff;">${todayBuyCount}笔</span>
-          </div>
-          <div style="display: flex; justify-content: space-between;">
-            <span style="color: #ffffff;">SELL:</span>
-            <span style="color: #ffffff;">${todaySellCount}笔</span>
-          </div>
-        </div>
-        <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
-          <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">TRADE</div>
-          <div style="display: flex; justify-content: space-between;">
-            <span style="color: #ffffff;">TOTAL:</span>
-            <span style="color: #ffffff;">${todayTotalValue.toFixed(0)}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between;">
-            <span style="color: #ffffff;">AVG:</span>
-            <span style="color: #ffffff;">${todayAvgValue.toFixed(0)}</span>
-          </div>
-        </div>
-        <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
-          <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">4X</div>
-          <div style="text-align: center; color: #ffffff;">
-            ${(todayTotalValue * 4).toFixed(0)} USDT
-          </div>
-        </div>
-        <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
-          <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">WEAR</div>
-          <div style="display: flex; justify-content: space-between;">
-            <span style="color: #ffffff;">LOSS:</span>
-            <span style="color: ${todayWearLoss > 0 ? '#ff6666' : '#ffffff'};">${todayWearLoss.toFixed(2)}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between;">
-            <span style="color: #ffffff;">RATE:</span>
-            <span style="color: ${todayWearLossPercentage > 0 ? '#ff6666' : '#ffffff'};">${todayWearLossPercentage.toFixed(2)}%</span>
-          </div>
-        </div>
-      </div>
-    `;
-
-  } catch (error) {
-    const statsContent = document.getElementById('stats-content');
-    if (statsContent) {
-      statsContent.innerHTML = `
-        <div style="color: #ff6666; text-align: center; padding: 4px; font-size: 10px;">
-          CALC ERROR: ${error.message}
-        </div>
-      `;
-    }
-    logit("控制面板交易量计算失败:", error);
-  }
+  // 调用统一的统计函数，指定为控制面板模式
+  await calculateTradingVolume(true);
 }
 
 // === 强制中断支持 ===
@@ -994,6 +1037,21 @@ window.showAlphaTradingPanel = () => {
   createControlPanel();
   logit("已重新打开 Alpha Trading 控制面板");
 };
+
+/**
+ * 统一日期格式为 YYYY-MM-DD
+ * @param {Date|string} date - 日期对象或日期字符串
+ * @returns {string} 格式化的日期字符串
+ */
+function formatDateKey(date) {
+  if (typeof date === 'string') {
+    // 如果是字符串，先转换为Date对象
+    date = new Date(date);
+  }
+  const result = date.toISOString().split('T')[0];
+  logit(`DEBUG: formatDateKey - 输入: ${date}, 输出: "${result}"`);
+  return result;
+}
 
 // 订单类型常量
 const ORDER_TYPE = {
@@ -1046,8 +1104,8 @@ function logit() {
  * @param {Function|null} checker - 可选的元素检查函数
  * @param {Function|null} onReady - 元素出现后要执行的操作（接收元素作为参数，可为async）
  * @param {number} maxAttempts - 最大尝试次数（默认10次）
- * @param {number} interval - 每次尝试间隔时间（毫秒，默认1000ms）
- * @param {number} initialDelay - 初始延迟时间（毫秒，默认500ms）
+ * @param {number} interval - 每次尝试间隔时间（毫秒，默认1500ms）
+ * @param {number} initialDelay - 初始延迟时间（毫秒，默认1000ms）
  * @returns {Promise<any>} - 返回 onReady 的结果
  */
 function waitForElement(
@@ -1056,7 +1114,7 @@ function waitForElement(
   onReady = null,
   maxAttempts = 10,
   interval = 1000,
-  initialDelay = 500
+  initialDelay = 1500
 ) {
   return new Promise((resolve, reject) => {
     setTimeout(() => {
@@ -1727,14 +1785,14 @@ async function clickOrderHistoryTabForVolumeCalc() {
       logit("点击「限价」标签失败:", error);
     }
     
-    // 点击「1天」时间范围 - 限制在容器内查找
+    // 点击「1周」时间范围 - 限制在容器内查找
     try {
-      // 查找包含"1天"文本的div元素
+      // 查找包含"1周"文本的div元素
       let oneDayButton = null;
       const divs = tradeContainer.querySelectorAll('div');
       
       for (const div of divs) {
-        if (div.textContent === '1天') {
+        if (div.textContent === '1周') {
           oneDayButton = div;
           break;
         }
@@ -1744,7 +1802,7 @@ async function clickOrderHistoryTabForVolumeCalc() {
         // 查找具有特定样式的按钮（通过CSS变量背景色）
         const buttons = tradeContainer.querySelectorAll('div[style*="background-color: var(--color-bg3)"]');
         for (const button of buttons) {
-          if (button.textContent === '1天') {
+          if (button.textContent === '1周') {
             oneDayButton = button;
             break;
           }
@@ -1755,7 +1813,7 @@ async function clickOrderHistoryTabForVolumeCalc() {
         // 查找所有可能的时间范围按钮
         const timeButtons = tradeContainer.querySelectorAll('div[style*="min-width: 48px"]');
         for (const button of timeButtons) {
-          if (button.textContent === '1天') {
+          if (button.textContent === '1周') {
             oneDayButton = button;
             break;
           }
@@ -1764,11 +1822,11 @@ async function clickOrderHistoryTabForVolumeCalc() {
       
       if (oneDayButton) {
         oneDayButton.click();
-        logit("已点击「1天」时间范围");
+        logit("已点击「1周」时间范围");
         // 等待时间范围按钮激活
         await waitForElement('div[style*="background-color: var(--color-bg3)"]', null, null, 5, 500, 500);
       } else {
-        logit("未找到「1天」时间范围按钮，尝试查找所有时间按钮...");
+        logit("未找到「1周」时间范围按钮，尝试查找所有时间按钮...");
         // 输出所有可能的时间按钮，帮助调试
         const allButtons = tradeContainer.querySelectorAll('div');
         const timeButtons = [];
@@ -1783,7 +1841,7 @@ async function clickOrderHistoryTabForVolumeCalc() {
         }
       }
     } catch (error) {
-      logit("点击「1天」时间范围失败:", error);
+      logit("点击「1周」时间范围失败:", error);
     }
     
     // 等待表格加载
@@ -1791,6 +1849,56 @@ async function clickOrderHistoryTabForVolumeCalc() {
     return true;
   } catch (error) {
     logit("点击委托历史标签页失败:", error);
+    return false;
+  }
+}
+
+/**
+ * 点击重置按钮，回到第一页
+ */
+async function clickResetButton() {
+  try {
+    logit("DEBUG: 开始点击重置按钮...");
+    
+    // 查找重置按钮 - 多种选择器
+    let resetButton = document.querySelector('button.bn-button__text__black div[style*="font-weight: 500"]') ||
+                     document.querySelector('button.bn-button__text__black') ||
+                     Array.from(document.querySelectorAll('button')).find(btn => 
+                       btn.textContent.includes('重置') || 
+                       btn.querySelector('div')?.textContent.includes('重置')
+                     );
+    
+    if (!resetButton) {
+      // 尝试更宽泛的查找
+      resetButton = Array.from(document.querySelectorAll('button')).find(btn => {
+        const text = btn.textContent || btn.querySelector('div')?.textContent || '';
+        return text.includes('重置');
+      });
+    }
+    
+    if (!resetButton) {
+      logit("DEBUG: 未找到重置按钮");
+      return false;
+    }
+    
+    logit("DEBUG: 找到重置按钮，点击...");
+    resetButton.click();
+    
+    // 等待页面重置
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // 验证是否回到第一页
+    const activePage = document.querySelector('.bn-pagination-item.active');
+    if (activePage && activePage.textContent === '1') {
+      logit("DEBUG: 重置成功，已回到第一页");
+      return true;
+    } else {
+      logit("DEBUG: 重置可能失败，当前页码: " + (activePage ? activePage.textContent : 'unknown'));
+      return false;
+    }
+    
+  } catch (error) {
+    logit("点击重置按钮失败:", error);
     return false;
   }
 }
@@ -1808,51 +1916,88 @@ function parseTradeRowForVolumeCalc(row) {
       return null;
     }
     
-    const cells = row.querySelectorAll('.bn-web-table-cell');
-    if (cells.length < 11) {
-      logit(`DEBUG: 单元格数量不足，期望11个，实际${cells.length}个`);
+    // 检查是否是测量行
+    if (row.classList.contains('bn-web-table-measure-row') || row.getAttribute('aria-hidden') === 'true') {
+      logit(`DEBUG: 跳过测量行`);
       return null;
     }
     
+    // 尝试多种单元格选择器
+    let cells = row.querySelectorAll('.bn-web-table-cell');
+    if (cells.length === 0) {
+      cells = row.querySelectorAll('td');
+    }
+    if (cells.length === 0) {
+      cells = row.querySelectorAll('th');
+    }
+    
+    if (cells.length < 10) {
+      logit(`DEBUG: 单元格数量不足，期望至少10个，实际${cells.length}个`);
+      return null;
+    }
+    
+    // 根据实际的列结构解析数据
+    // 列结构: 展开图标(0) | 创建时间(1) | 代币(2) | 类型(3) | 方向(4) | 平均价格(5) | 价格(6) | 已成交(7) | 数量(8) | 成交额(9) | 状态(10)
+    
     // 获取时间（第2列，索引1）
-    const timeText = cells[1]?.textContent?.trim();
-    if (!timeText) {
-      logit(`DEBUG: 时间文本为空`);
+    const timeCell = cells[1];
+    const timeText = timeCell?.textContent?.trim();
+    
+    if (!timeText || !/^\d{4}-\d{2}-\d{2}/.test(timeText)) {
+      logit(`DEBUG: 时间文本无效: ${timeText}`);
       return null;
     }
     
     // 获取交易方向（第5列，索引4）
-    const directionElement = cells[4]?.querySelector('div');
-    const direction = directionElement?.textContent?.trim();
-    if (!direction) {
-      logit(`DEBUG: 交易方向为空，原始内容: ${cells[4]?.textContent}`);
+    const directionCell = cells[4];
+    let direction = '';
+    if (directionCell) {
+      direction = directionCell.textContent?.trim();
+      // 也检查子元素
+      if (!direction) {
+        const subElement = directionCell.querySelector('div');
+        if (subElement) {
+          direction = subElement.textContent?.trim();
+        }
+      }
+    }
+    
+    if (!direction || (!direction.includes('买入') && !direction.includes('卖出'))) {
+      logit(`DEBUG: 交易方向无效: ${direction}`);
       return null;
     }
     
     // 获取已成交数量（第8列，索引7）
-    const filledText = cells[7]?.textContent?.trim();
+    const filledCell = cells[7];
+    const filledText = filledCell?.textContent?.trim();
+    
     if (!filledText) {
       logit(`DEBUG: 已成交数量为空`);
       return null;
     }
     
     // 获取状态（第11列，索引10）
-    const statusElement = cells[10]?.querySelector('div');
-    const status = statusElement?.textContent?.trim();
-    if (!status) {
-      logit(`DEBUG: 状态为空，原始内容: ${cells[10]?.textContent}`);
+    const statusCell = cells[10];
+    let status = '';
+    if (statusCell) {
+      status = statusCell.textContent?.trim();
+      // 也检查子元素
+      if (!status) {
+        const subElement = statusCell.querySelector('div');
+        if (subElement) {
+          status = subElement.textContent?.trim();
+        }
+      }
+    }
+    
+    if (!status || !status.includes('已成交')) {
+      logit(`DEBUG: 状态无效: ${status}`);
       return null;
     }
     
-    // 只处理已成交的订单（买入和卖出都处理）
-    if (status !== '已成交') {
+    // 只处理已成交的订单
+    if (!status.includes('已成交')) {
       logit(`DEBUG: 订单状态不是已成交: ${status}`);
-      return null;
-    }
-    
-    // 检查是否为买入或卖出
-    if (!direction.includes('买入') && !direction.includes('卖出')) {
-      logit(`DEBUG: 交易方向不是买入或卖出: ${direction}`);
       return null;
     }
     
@@ -1863,7 +2008,7 @@ function parseTradeRowForVolumeCalc(row) {
       return null;
     }
     
-    // 解析数量（提取数字部分）
+    // 解析已成交数量（第7列，索引6）
     const volumeMatch = filledText.match(/[\d.]+/);
     const volume = volumeMatch ? Math.round(parseFloat(volumeMatch[0]) * 100000000) / 100000000 : 0;
     
@@ -1874,48 +2019,34 @@ function parseTradeRowForVolumeCalc(row) {
     
     logit(`DEBUG: 数量解析结果: ${volume}`);
     
-    // 尝试获取价格信息（从第7列，索引6，价格列）
+    // 获取价格信息（第7列，索引6）
     let price = 0;
     try {
-      const priceText = cells[6]?.textContent?.trim();
-      logit(`DEBUG: 价格原始文本: "${priceText}"`);
-      
-      if (priceText) {
+      const priceCell = cells[6];
+      const priceText = priceCell?.textContent?.trim();
+      if (priceText && /[\d.]+/.test(priceText)) {
         const priceMatch = priceText.match(/[\d.]+/);
         if (priceMatch) {
-          // 使用8位小数精度进行计算
           price = Math.round(parseFloat(priceMatch[0]) * 100000000) / 100000000;
           logit(`DEBUG: 价格解析结果: ${price}`);
-        } else {
-          logit(`DEBUG: 价格正则匹配失败`);
         }
-      } else {
-        logit(`DEBUG: 价格文本为空`);
       }
     } catch (error) {
       logit(`DEBUG: 价格解析失败: ${error.message}`);
     }
     
-    // 获取成交额（从第10列，索引9，成交额列）
+    // 获取成交额（第10列，索引9）
     let totalValue = 0;
     try {
-      const totalValueText = cells[9]?.textContent?.trim();
-      logit(`DEBUG: 成交额原始文本: "${totalValueText}"`);
-      
-      if (totalValueText) {
-        // 提取数字部分，包括小数点，去掉USDT等后缀
+      const totalValueCell = cells[9];
+      const totalValueText = totalValueCell?.textContent?.trim();
+      if (totalValueText && /[\d,]+\.?\d*/.test(totalValueText)) {
         const totalValueMatch = totalValueText.match(/[\d,]+\.?\d*/);
         if (totalValueMatch) {
-          // 使用更精确的浮点数处理，避免精度丢失
           const cleanValue = totalValueMatch[0].replace(/,/g, '');
-          // 使用8位小数精度进行计算
           totalValue = Math.round(parseFloat(cleanValue) * 100000000) / 100000000;
           logit(`DEBUG: 成交额解析结果: ${totalValue} (原始: ${cleanValue})`);
-        } else {
-          logit(`DEBUG: 成交额正则匹配失败`);
         }
-      } else {
-        logit(`DEBUG: 成交额文本为空`);
       }
     } catch (error) {
       logit(`DEBUG: 成交额解析失败: ${error.message}`);
@@ -1935,6 +2066,13 @@ function parseTradeRowForVolumeCalc(row) {
     
     logit(`DEBUG: 成功解析交易行 - 时间: ${timeText}, 方向: ${direction}, 数量: ${volume}, 成交额: ${totalValue}, 价格: ${price}`);
     
+    // 调试：显示所有列的内容
+    logit(`DEBUG: 所有列内容:`);
+    for (let i = 0; i < Math.min(cells.length, 10); i++) {
+      const cellText = cells[i]?.textContent?.trim() || '';
+      logit(`DEBUG: 列${i + 1}: "${cellText}"`);
+    }
+    
     return result;
     
   } catch (error) {
@@ -1950,22 +2088,32 @@ function parseTradeRowForVolumeCalc(row) {
 async function getCurrentPageTradesForVolumeCalc() {
   const trades = [];
   try {
-    // 等待表格行加载
-    await waitForElement('table tbody tr', null, null, 5, 500, 500);
+    // 等待表格行加载，使用更宽松的等待条件
+    try {
+      await waitForElement('table tbody tr', null, null, 5, 500, 500);
+    } catch (error) {
+      logit("等待表格行加载超时，尝试直接查找:", error.message);
+    }
     
-    // 尝试多种表格选择器
+    // 尝试多种表格选择器，排除测量行
     let rows = document.querySelectorAll('.bn-web-table-tbody .bn-web-table-row:not(.bn-web-table-measure-row)');
     
     if (rows.length === 0) {
       // 尝试更宽泛的选择器
-      rows = document.querySelectorAll('table tbody tr');
+      rows = document.querySelectorAll('table tbody tr:not(.bn-web-table-measure-row)');
       logit(`DEBUG: 使用 table tbody tr 选择器，找到 ${rows.length} 行`);
     }
     
     if (rows.length === 0) {
       // 尝试查找所有可能的行
-      rows = document.querySelectorAll('tbody tr');
+      rows = document.querySelectorAll('tbody tr:not(.bn-web-table-measure-row)');
       logit(`DEBUG: 使用 tbody tr 选择器，找到 ${rows.length} 行`);
+    }
+    
+    if (rows.length === 0) {
+      // 最后尝试查找任何包含数据的行
+      rows = document.querySelectorAll('tr:not(.bn-web-table-measure-row)');
+      logit(`DEBUG: 使用 tr 选择器，找到 ${rows.length} 行`);
     }
     
     logit(`DEBUG: 最终找到 ${rows.length} 行数据`);
@@ -1975,9 +2123,18 @@ async function getCurrentPageTradesForVolumeCalc() {
       // 检查行是否包含必要的单元格
       const cells = row.querySelectorAll('.bn-web-table-cell');
       
-      logit(`DEBUG: 第${index + 1}行 - 单元格数量: ${cells.length}`);
+      // 如果找不到标准单元格，尝试其他选择器
+      let actualCells = cells;
+      if (cells.length === 0) {
+        actualCells = row.querySelectorAll('td');
+      }
+      if (actualCells.length === 0) {
+        actualCells = row.querySelectorAll('th');
+      }
       
-      if (cells.length >= 11) {
+      logit(`DEBUG: 第${index + 1}行 - 单元格数量: ${actualCells.length}`);
+      
+      if (actualCells.length >= 8) { // 降低要求，至少8个单元格
         // 尝试解析这一行
         const tradeData = parseTradeRowForVolumeCalc(row);
         if (tradeData) {
@@ -2013,30 +2170,83 @@ async function getCurrentPageTradesForVolumeCalc() {
 }
 
 /**
+ * 调试分页状态
+ */
+function debugPaginationStatus() {
+  try {
+    logit("=== 分页调试信息 ===");
+    
+    let debugInfo = "=== 分页调试信息 ===\n";
+    
+    // 查找当前页码
+    const activePage = document.querySelector('.bn-pagination-item.active');
+    if (activePage) {
+      const pageInfo = `当前页码: ${activePage.textContent}`;
+      logit(pageInfo);
+      debugInfo += pageInfo + "\n";
+    }
+    
+    // 查找所有页码按钮
+    const allPages = document.querySelectorAll('.bn-pagination-item');
+    const pageInfo = `找到 ${allPages.length} 个页码按钮`;
+    logit(pageInfo);
+    debugInfo += pageInfo + "\n";
+    
+    allPages.forEach((page, index) => {
+      const isActive = page.classList.contains('active');
+      const pageNum = page.textContent;
+      const pageInfo = `页码${index + 1}: ${pageNum} - 激活状态: ${isActive}`;
+      logit(pageInfo);
+      debugInfo += pageInfo + "\n";
+    });
+    
+    // 检查是否有下一页
+    const hasNext = hasNextPageForVolumeCalc();
+    const nextInfo = `是否有下一页: ${hasNext}`;
+    logit(nextInfo);
+    debugInfo += nextInfo + "\n";
+    
+    debugInfo += "=== 分页调试信息结束 ===";
+    logit("=== 分页调试信息结束 ===");
+    
+    // 更新全局变量
+    paginationDebugInfo = debugInfo;
+    
+  } catch (error) {
+    const errorInfo = `调试分页状态失败: ${error.message}`;
+    logit(errorInfo);
+    paginationDebugInfo = errorInfo;
+  }
+}
+
+/**
  * 检查是否有下一页
  * @returns {boolean} 是否有下一页
  */
 function hasNextPageForVolumeCalc() {
   try {
-    // 查找下一页按钮 - 根据实际HTML结构调整
-    const nextButton = document.querySelector('.bn-pagination-next:not(.disabled)') ||
-                      document.querySelector('.bn-pagination-next[aria-disabled="false"]') ||
-                      document.querySelector('button[aria-label="下一页"]') || 
-                      document.querySelector('button[title="下一页"]') ||
-                      document.querySelector('.pagination-next') ||
-                      document.querySelector('[data-testid="pagination-next"]');
-    
-    if (!nextButton) {
-      logit("未找到下一页按钮");
+    // 查找当前页码
+    const activePage = document.querySelector('.bn-pagination-item.active');
+    if (!activePage) {
+      logit("未找到当前页码");
       return false;
     }
     
-    // 检查按钮是否可用
-    const isDisabled = nextButton.classList.contains('disabled') || 
-                      nextButton.getAttribute('aria-disabled') === 'true';
+    const currentPage = parseInt(activePage.textContent);
     
-    logit(`下一页按钮状态: ${isDisabled ? '已禁用' : '可用'}`);
-    return !isDisabled;
+    // 查找所有页码按钮
+    const allPages = document.querySelectorAll('.bn-pagination-item');
+    let maxPage = 0;
+    
+    allPages.forEach(page => {
+      const pageNum = parseInt(page.textContent);
+      if (!isNaN(pageNum) && pageNum > maxPage) {
+        maxPage = pageNum;
+      }
+    });
+    
+    logit(`当前页码: ${currentPage}, 最大页码: ${maxPage}`);
+    return currentPage < maxPage;
   } catch (error) {
     logit("检查下一页失败:", error);
     return false;
@@ -2049,35 +2259,44 @@ function hasNextPageForVolumeCalc() {
  */
 async function clickNextPageForVolumeCalc() {
   try {
-    // 查找下一页按钮 - 根据实际HTML结构调整
-    const nextButton = document.querySelector('.bn-pagination-next:not(.disabled)') ||
-                      document.querySelector('.bn-pagination-next[aria-disabled="false"]') ||
-                      document.querySelector('button[aria-label="下一页"]') || 
-                      document.querySelector('button[title="下一页"]') ||
-                      document.querySelector('.pagination-next') ||
-                      document.querySelector('[data-testid="pagination-next"]');
-    
-    if (!nextButton) {
-      logit("未找到下一页按钮");
+    // 查找当前页码
+    const activePage = document.querySelector('.bn-pagination-item.active');
+    if (!activePage) {
+      logit("未找到当前页码");
       return false;
     }
     
-    // 检查按钮是否可用
-    const isDisabled = nextButton.classList.contains('disabled') || 
-                      nextButton.getAttribute('aria-disabled') === 'true';
+    const currentPage = parseInt(activePage.textContent);
+    const nextPage = currentPage + 1;
     
-    if (isDisabled) {
-      logit("下一页按钮已禁用，无法点击");
+    logit(`准备从第 ${currentPage} 页翻到第 ${nextPage} 页...`);
+    
+    // 查找下一页的页码按钮
+    const nextPageButton = Array.from(document.querySelectorAll('.bn-pagination-item')).find(button => {
+      return parseInt(button.textContent) === nextPage;
+    });
+    
+    if (!nextPageButton) {
+      logit(`未找到第 ${nextPage} 页按钮`);
       return false;
     }
     
-    logit("点击下一页按钮...");
-    nextButton.click();
-    logit("已点击下一页");
+    logit(`找到第 ${nextPage} 页按钮，点击...`);
+    nextPageButton.click();
     
-    // 等待页面加载，使用waitForElement等待表格行加载
-    await waitForElement('table tbody tr', null, null, 10, 1000, 1000);
-    return true;
+    // 等待页面加载
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // 验证翻页是否成功
+    const newActivePage = document.querySelector('.bn-pagination-item.active');
+    if (newActivePage && parseInt(newActivePage.textContent) === nextPage) {
+      logit(`成功翻到第 ${nextPage} 页`);
+      return true;
+    } else {
+      logit(`翻页失败，当前页码: ${newActivePage ? newActivePage.textContent : 'unknown'}`);
+      return false;
+    }
+    
   } catch (error) {
     logit("点击下一页失败:", error);
     return false;
@@ -2093,20 +2312,7 @@ function calculateDailyVolumeForVolumeCalc(trades) {
   const dailyStats = {};
   
   // 获取今日日期（考虑8点分界）
-  const now = new Date();
-  let today;
-  if (now.getHours() < 8) {
-    // 如果当前时间在8点前，今日是昨天
-    today = new Date(now);
-    today.setDate(today.getDate() - 1);
-    logit(`DEBUG: 当前时间 ${now.toLocaleString()} 在8点前，今日日期调整为: ${today.toISOString().split('T')[0]}`);
-  } else {
-    // 如果当前时间在8点后，今日是今天
-    today = new Date(now);
-    logit(`DEBUG: 当前时间 ${now.toLocaleString()} 在8点后，今日日期为: ${today.toISOString().split('T')[0]}`);
-  }
-  today.setHours(8, 0, 0, 0);
-  const todayKey = today.toISOString().split('T')[0];
+    const todayKey = formatDateKey(new Date(new Date().getTime() - 8 * 60 *60 *1000));
   
   logit(`DEBUG: 今日日期（8点分界）: ${todayKey}`);
   logit(`DEBUG: 总共需要处理的交易数量: ${trades.length}`);
@@ -2120,7 +2326,6 @@ function calculateDailyVolumeForVolumeCalc(trades) {
     // 调整时间：如果时间在0-7:59，算作前一天的交易
     // 如果时间在8:00-23:59，算作当天的交易
     let tradeDate = new Date(trade.time);
-    const originalDate = new Date(trade.time);
     const originalHours = tradeDate.getHours();
     
     logit(`DEBUG: 处理第${processedCount}笔交易 - 原始时间: ${trade.rawTime}, 原始小时: ${originalHours}`);
@@ -2135,9 +2340,9 @@ function calculateDailyVolumeForVolumeCalc(trades) {
     // 设置时间为8点
     tradeDate.setHours(8, 0, 0, 0);
     
-    const dateKey = tradeDate.toISOString().split('T')[0];
+    const dateKey = formatDateKey(tradeDate);
     
-    logit(`DEBUG: 交易归属日期: ${dateKey}, 是否今日: ${dateKey === todayKey}`);
+    logit(`DEBUG: 交易归属日期: ${dateKey}, 是否今日: ${dateKey === todayKey}, 交易日期: "${dateKey}", 今日日期: "${todayKey}", 长度: ${dateKey.length}/${todayKey.length}, 类型: ${typeof dateKey}/${typeof todayKey}`);
     
     // 只统计今日的交易
     if (dateKey === todayKey) {
@@ -2212,7 +2417,7 @@ function calculateDailyVolumeForVolumeCalc(trades) {
       logit(`DEBUG: 磨损计算 - 平均买入价: ${avgBuyPrice}, 平均卖出价: ${avgSellPrice}`);
       logit(`DEBUG: 磨损计算 - 磨损损失: ${stats.wearLoss}, 磨损比例: ${stats.wearLossPercentage}%`);
       
-      logit(`📊 ${dateKey} 磨损统计: 买入${avgBuyPrice.toFixed(4)} USDT, 卖出${avgSellPrice.toFixed(4)} USDT, 磨损${stats.wearLoss.toFixed(4)} USDT (${stats.wearLossPercentage.toFixed(2)}%)`);
+      logit(`📊 ${dateKey} 磨损统计: 磨损${stats.wearLoss.toFixed(4)} USDT (${stats.wearLossPercentage.toFixed(2)}%)`);
     } else {
       logit(`DEBUG: ${dateKey} 缺少买入或卖出交易，无法计算磨损`);
     }
@@ -2227,25 +2432,15 @@ function calculateDailyVolumeForVolumeCalc(trades) {
  */
 function shouldStopPagination() {
   try {
-    // 获取今日日期（考虑8点分界）
-    const now = new Date();
-    let today;
-    if (now.getHours() < 8) {
-      today = new Date(now);
-      today.setDate(today.getDate() - 1);
-    } else {
-      today = new Date(now);
-    }
-    today.setHours(8, 0, 0, 0);
-    const todayKey = today.toISOString().split('T')[0];
+    const todayKey = formatDateKey(new Date(new Date().getTime() - 8 * 60 *60 *1000))
     
-    // 获取当前页面的所有交易行
+    // 获取当前页面的所有交易行，排除测量行
     let rows = document.querySelectorAll('.bn-web-table-tbody .bn-web-table-row:not(.bn-web-table-measure-row)');
     if (rows.length === 0) {
-      rows = document.querySelectorAll('table tbody tr');
+      rows = document.querySelectorAll('table tbody tr:not(.bn-web-table-measure-row)');
     }
     if (rows.length === 0) {
-      rows = document.querySelectorAll('tbody tr');
+      rows = document.querySelectorAll('tbody tr:not(.bn-web-table-measure-row)');
     }
     
     let foundNonTodayTrade = false;
@@ -2268,7 +2463,7 @@ function shouldStopPagination() {
               adjustedDate.setDate(adjustedDate.getDate() - 1);
             }
             adjustedDate.setHours(8, 0, 0, 0);
-            const dateKey = adjustedDate.toISOString().split('T')[0];
+            const dateKey = formatDateKey(adjustedDate);
             
             if (dateKey === todayKey) {
               todayTradeCount++;
@@ -2282,16 +2477,15 @@ function shouldStopPagination() {
       }
     }
     
-    // 如果发现非今日交易，或者当前页没有今日交易，停止翻页
-    if (foundNonTodayTrade) {
-      return true;
-    }
-    
-    // 如果当前页没有今日交易，也停止翻页（说明已经翻过了）
+    // 如果当前页没有今日交易，停止翻页（说明已经翻过了）
     if (todayTradeCount === 0) {
       logit(`当前页没有今日交易，停止翻页`);
       return true;
     }
+    
+    // 如果当前页有今日交易，继续翻页（即使也有非今日交易）
+    logit(`当前页有 ${todayTradeCount} 笔今日交易，继续翻页`);
+    return false;
     
     return false;
   } catch (error) {
@@ -2310,6 +2504,17 @@ async function getAllTradesForVolumeCalc() {
   const maxPages = 50; // 防止无限循环
   
   try {
+    // 确保从第一页开始，先重置分页状态
+    logit("确保从第一页开始获取数据...");
+    const resetClicked = await clickResetButton();
+    if (resetClicked) {
+      logit("重置成功，从第一页开始");
+      // 等待重置完成
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    } else {
+      logit("重置失败，但继续执行...");
+    }
+    
     // 先获取第一页数据
     let currentPageTrades = await getCurrentPageTradesForVolumeCalc();
     allTrades.push(...currentPageTrades);
@@ -2327,24 +2532,21 @@ async function getAllTradesForVolumeCalc() {
         break;
       }
       
-      // 等待页面加载完成，使用waitForElement等待表格行加载
-      await waitForElement('table tbody tr', null, null, 10, 1000, 1000);
+      // 等待页面加载
+      await new Promise(resolve => setTimeout(resolve, 500));
       
-      // 再次检查是否有下一页（防止页面加载后状态变化）
-      if (!hasNextPageForVolumeCalc()) {
-        logit("翻页后发现没有下一页，停止获取");
-        break;
-      }
-      
-      // 检查当前页面是否包含非今日交易，如果包含就停止翻页
-      if (shouldStopPagination()) {
-        logit(`第 ${pageCount + 1} 页超出今日范围，停止翻页`);
-        break;
-      }
-      
+      // 先获取当前页面的数据
       currentPageTrades = await getCurrentPageTradesForVolumeCalc();
       allTrades.push(...currentPageTrades);
       pageCount++;
+      
+      logit(`第 ${pageCount} 页: 获取到 ${currentPageTrades.length} 笔交易`);
+      
+      // 检查当前页面是否包含非今日交易，如果包含就停止翻页
+      if (shouldStopPagination()) {
+        logit(`第 ${pageCount} 页超出今日范围，停止翻页`);
+        break;
+      }
       
       logit(`第 ${pageCount} 页: 获取到 ${currentPageTrades.length} 笔交易`);
       
@@ -2352,12 +2554,6 @@ async function getAllTradesForVolumeCalc() {
       if (currentPageTrades.length === 0) {
         logit("当前页没有数据，可能已到最后一页");
         break;
-      }
-      
-      // 每翻几页后稍作停顿，避免被风控
-      if (pageCount % 3 === 0) {
-        logit("已翻3页，稍作停顿...");
-        await waitForElement('table tbody tr', null, null, 5, 500, 1000);
       }
     }
     
@@ -2373,9 +2569,22 @@ async function getAllTradesForVolumeCalc() {
 /**
  * 计算并显示交易量统计
  */
-async function calculateTradingVolume() {
+async function calculateTradingVolume(isPanelMode = false) {
   try {
-    logit("开始计算交易量统计...");
+    logit(`开始计算交易量统计... (${isPanelMode ? '控制面板模式' : '详细模式'})`);
+    
+    // 控制面板模式处理
+    if (isPanelMode) {
+      const statsContent = document.getElementById('stats-content');
+      if (!statsContent) return;
+
+      // 显示计算中状态
+      statsContent.innerHTML = `
+        <div style="color: #ffff00; text-align: center; padding: 4px; font-size: 10px;">
+          GETTING DATA...
+        </div>
+      `;
+    }
     
     // 1. 点击委托历史标签页
     logit("DEBUG: 开始点击委托历史标签页...");
@@ -2383,8 +2592,26 @@ async function calculateTradingVolume() {
     if (!tabClicked) {
       const errorMsg = "无法访问委托历史页面";
       logit(errorMsg);
-      alert(errorMsg);
+      if (isPanelMode) {
+        const statsContent = document.getElementById('stats-content');
+        if (statsContent) {
+          statsContent.innerHTML = `
+            <div style="color: #ff6666; text-align: center; padding: 4px; font-size: 10px;">
+              NO ACCESS TO HISTORY
+            </div>
+          `;
+        }
+      } else {
+        alert(errorMsg);
+      }
       return;
+    }
+    
+    // 2. 点击重置按钮，确保从第一页开始
+    logit("DEBUG: 开始点击重置按钮...");
+    const resetClicked = await clickResetButton();
+    if (!resetClicked) {
+      logit("DEBUG: 重置按钮点击失败，但继续执行...");
     }
     
     // 检查页面DOM结构
@@ -2407,7 +2634,18 @@ async function calculateTradingVolume() {
     if (allTrades.length === 0) {
       const errorMsg = "未找到任何交易订单";
       logit(errorMsg);
-      alert(errorMsg);
+      if (isPanelMode) {
+        const statsContent = document.getElementById('stats-content');
+        if (statsContent) {
+          statsContent.innerHTML = `
+            <div style="color: #ff6666; text-align: center; padding: 4px; font-size: 10px;">
+              NO TRADES FOUND
+            </div>
+          `;
+        }
+      } else {
+        alert(errorMsg);
+      }
       return;
     }
     
@@ -2430,16 +2668,7 @@ async function calculateTradingVolume() {
     // 4. 输出统计结果到console
     console.log("=== 今日交易量统计结果 ===");
     
-    // 获取今日日期
-    const now = new Date();
-    let today;
-    if (now.getHours() < 8) {
-      today = new Date(now);
-      today.setDate(today.getDate() - 1);
-    } else {
-      today = new Date(now);
-    }
-    const todayKey = today.toISOString().split('T')[0];
+    const todayKey = formatDateKey(new Date(new Date().getTime() - 8 * 60 *60 *1000));
     
     console.log(`统计日期: ${todayKey} (8点分界)`);
     console.log(`总成交订单数: ${allTrades.length}`);
@@ -2496,22 +2725,85 @@ async function calculateTradingVolume() {
       console.log(`磨损百分比: ${todayWearLossPercentage.toFixed(2)}%`);
     }
     
-    // 5. 创建并显示DOM界面
-    createTradingStatsDisplay(
-      todayKey, 
-      todayTotalValue, // USDT买入成交额总量
-      todayAvgValue, // 平均每笔USDT成交额
-      todayWearLoss,
-      todayWearLossPercentage
-    );
-    
-    logit("交易量统计完成，请查看控制台输出和页面显示");
+    // 5. 根据模式显示结果
+    if (isPanelMode) {
+      // 控制面板模式：更新控制面板显示
+      const statsContent = document.getElementById('stats-content');
+      if (statsContent) {
+        statsContent.innerHTML = `
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; font-size: 10px;">
+            <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+              <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">${todayKey}</div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #ffffff;">BUY:</span>
+                <span style="color: #ffffff;">${todayBuyCount}笔</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #ffffff;">SELL:</span>
+                <span style="color: #ffffff;">${todaySellCount}笔</span>
+              </div>
+            </div>
+            <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+              <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">TRADE</div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #ffffff;">TOTAL:</span>
+                <span style="color: #ffffff;">${todayTotalValue.toFixed(0)}</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #ffffff;">AVG:</span>
+                <span style="color: #ffffff;">${todayAvgValue.toFixed(0)}</span>
+              </div>
+            </div>
+            <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+              <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">4X</div>
+              <div style="text-align: center; color: #ffffff;">
+                ${(todayTotalValue * 4).toFixed(0)} USDT
+              </div>
+            </div>
+            <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+              <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">WEAR</div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #ffffff;">LOSS:</span>
+                <span style="color: ${todayWearLoss > 0 ? '#ff6666' : '#ffffff'};">${todayWearLoss.toFixed(2)}</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #ffffff;">RATE:</span>
+                <span style="color: ${todayWearLossPercentage > 0 ? '#ff6666' : '#ffffff'};">${todayWearLossPercentage.toFixed(2)}%</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      logit("控制面板统计更新完成");
+    } else {
+      // 详细模式：创建独立的DOM界面
+      createTradingStatsDisplay(
+        todayKey, 
+        todayTotalValue, // USDT买入成交额总量
+        todayAvgValue, // 平均每笔USDT成交额
+        todayWearLoss,
+        todayWearLossPercentage
+      );
+      logit("交易量统计完成，请查看控制台输出和页面显示");
+    }
     
   } catch (error) {
     const errorMsg = `计算交易量统计失败: ${error.message}`;
     logit(errorMsg);
     console.error("交易量统计错误:", error);
-    alert(errorMsg);
+    
+    if (isPanelMode) {
+      const statsContent = document.getElementById('stats-content');
+      if (statsContent) {
+        statsContent.innerHTML = `
+          <div style="color: #ff6666; text-align: center; padding: 4px; font-size: 10px;">
+            CALC ERROR: ${error.message}
+          </div>
+        `;
+      }
+    } else {
+      alert(errorMsg);
+    }
   }
 }
 
@@ -2755,7 +3047,3 @@ function createStatItem(label, value, color) {
 setTimeout(() => {
   createControlPanel();
 }, 1000);
-
-// === 启动自动交易 ===
-// startTrading();
-// startTrading();
