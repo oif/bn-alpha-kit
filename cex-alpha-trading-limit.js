@@ -27,14 +27,14 @@
  *   定价可以放在 K 线核心波动范围内，必要时候可以考虑卖出高于买入，价格建议参考手机客户端限价交易页面的实时成交记录设定。
  *   启用动态价格时，每轮交易前会自动从成交记录中分析价格分布，找到出现次数最多的价格作为基准，实现最小磨损。
  *   ORDER_VOLUME            —— 每次买/卖的数量
- *   MAX_TRADES              —— 最大刷单轮数
+ *   MAX_TRADES              —— 最大交易轮数
  *   ORDER_TIMEOUT_MS        —— 单笔订单最大等待成交时间（毫秒），如果是希望低磨损，慢慢等待合适价格买卖的话，推荐这个值给到分钟级以上
  *   ABORT_ON_PRICE_WARNING  —— 遇到价格警告弹窗时是否中止（true/false）
  *
  * 注意事项：
  *   - 本脚本仅供学习与研究自动化技术使用，严禁用于违反交易所规则的行为。
- *   - 频繁刷单可能导致账号风控、冻结等风险，请谨慎使用。
- *   - 刷分期间建议偶尔移动鼠标或进行简单页面交互，以减少被风控系统判定为异常行为的风险。
+ *   - 频繁交易可能导致账号风控、冻结等风险，请谨慎使用。
+ *   - 交易期间建议偶尔移动鼠标或进行简单页面交互，以减少被风控系统判定为异常行为的风险。
  *   - 交易所 UI 可能更新，请根据实际页面结构调整选择器。
  *   - 建议在测试账号或模拟盘环境下使用。
  *   - DYOR！！！
@@ -48,26 +48,949 @@ let ORDER_PRICE_BUY = 48.004839;
 /** 卖出价格（建议略高于市价，单位：币种） */
 let ORDER_PRICE_SELL = 48.0048361;
 /** 每次买/卖的数量（单位：币种） */
-const ORDER_VOLUME = 10;
-/** 最大刷单轮数（即买入+卖出为一轮） */
-const MAX_TRADES = 13;
+let ORDER_VOLUME = 10;
+/** 最大交易轮数（即买入+卖出为一轮） */
+let MAX_TRADES = 13;
 /** 单笔订单最大等待成交时间（毫秒），超时未成交则提示人工干预。*/
-const ORDER_TIMEOUT_MS = 300000;
+let ORDER_TIMEOUT_MS = 300000;
 /** 遇到价格警告弹窗时是否中止（true/false） */
-const ABORT_ON_PRICE_WARNING = false;
+let ABORT_ON_PRICE_WARNING = false;
 /** 是否启用动态价格设定（true/false） */
-const ENABLE_DYNAMIC_PRICING = false;
+let ENABLE_DYNAMIC_PRICING = true;
 /** 动态价格偏移量（买入价格 = 分布最多价格 + 偏移量，卖出价格 = 分布最多价格 - 偏移量） */
 /** 如果给 0 则代表在分布价格上不加价也不减价，但可能会出手比较慢 */
-const PRICE_OFFSET = 0.00000000;
+let PRICE_OFFSET = 0.00000000;
 /** 24 小时成交量最低要求（单位：M）不推荐刷成交量太低的币，潜在大波动 */
-const MIN_VOLUME_M = 500;
+let MIN_VOLUME_M = 500;
+
+// === 悬浮控制面板 ===
+let controlPanel = null;
+let isTrading = false;
+let currentDynamicPrices = { buyPrice: 0, sellPrice: 0 };
+
+/**
+ * 创建悬浮控制面板
+ */
+function createControlPanel() {
+  // 移除已存在的控制面板
+  if (controlPanel) {
+    controlPanel.remove();
+  }
+
+  // 创建主容器
+  controlPanel = document.createElement('div');
+  controlPanel.id = 'alpha-trading-control-panel';
+  controlPanel.style.cssText = `
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 580px;
+    background: #000000;
+    border: 2px solid #ffffff;
+    border-radius: 0px;
+    padding: 8px;
+    color: #ffffff;
+    font-family: 'Courier New', 'Monaco', 'Menlo', monospace;
+    font-size: 11px;
+    line-height: 1.2;
+    box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
+    z-index: 10001;
+    transition: all 0.2s ease;
+    max-height: 80vh;
+    overflow-y: auto;
+  `;
+
+  // 创建标题栏
+  const titleBar = document.createElement('div');
+  titleBar.style.cssText = `
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #ffffff;
+  `;
+
+  const title = document.createElement('div');
+  title.textContent = '[ ALPHA TRADING CONTROL ]';
+  title.style.cssText = `
+    font-weight: bold;
+    font-size: 12px;
+    color: #ffffff;
+    text-align: center;
+    letter-spacing: 1px;
+  `;
+
+  // 控制按钮容器
+  const controlButtons = document.createElement('div');
+  controlButtons.style.cssText = `
+    display: flex;
+    gap: 2px;
+  `;
+
+  // 缩小按钮
+  const minimizeBtn = document.createElement('button');
+  minimizeBtn.textContent = '[_]';
+  minimizeBtn.style.cssText = `
+    background: none;
+    border: 1px solid #ffffff;
+    color: #ffffff;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    cursor: pointer;
+    padding: 2px 4px;
+    transition: all 0.2s ease;
+  `;
+  minimizeBtn.onmouseover = () => {
+    minimizeBtn.style.background = '#ffffff';
+    minimizeBtn.style.color = '#000';
+  };
+  minimizeBtn.onmouseout = () => {
+    minimizeBtn.style.background = 'none';
+    minimizeBtn.style.color = '#ffffff';
+  };
+  minimizeBtn.onclick = () => {
+    const gridContainer = controlPanel.querySelector('.grid-container');
+    if (gridContainer) {
+      gridContainer.style.display = gridContainer.style.display === 'none' ? 'grid' : 'none';
+      minimizeBtn.textContent = gridContainer.style.display === 'none' ? '[□]' : '[_]';
+    }
+  };
+
+  // 关闭按钮
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '[X]';
+  closeBtn.style.cssText = `
+    background: none;
+    border: 1px solid #ffffff;
+    color: #ffffff;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    cursor: pointer;
+    padding: 2px 4px;
+    transition: all 0.2s ease;
+  `;
+  closeBtn.onmouseover = () => {
+    closeBtn.style.background = '#ffffff';
+    closeBtn.style.color = '#000';
+  };
+  closeBtn.onmouseout = () => {
+    closeBtn.style.background = 'none';
+    closeBtn.style.color = '#ffffff';
+  };
+  closeBtn.onclick = () => {
+    controlPanel.remove();
+    controlPanel = null;
+  };
+
+  controlButtons.appendChild(minimizeBtn);
+  controlButtons.appendChild(closeBtn);
+  titleBar.appendChild(title);
+  titleBar.appendChild(controlButtons);
+
+  // 创建参数配置区域
+  const configSection = document.createElement('div');
+  configSection.style.cssText = `
+    margin-bottom: 16px;
+  `;
+
+  // 价格配置
+  const priceSection = createParameterSection('PRICE CONFIG', [
+    { label: 'DYNAMIC PRICE', value: ENABLE_DYNAMIC_PRICING, key: 'ENABLE_DYNAMIC_PRICING', type: 'checkbox', description: '自动从市场获取最优价格' },
+    { label: 'PRICE OFFSET', value: PRICE_OFFSET, key: 'PRICE_OFFSET', type: 'number', step: '0.00000001', description: '买入价格=市场价+偏移量，卖出价格=市场价-偏移量' },
+    { label: 'BUY PRICE', value: ORDER_PRICE_BUY, key: 'ORDER_PRICE_BUY', type: 'number', step: '0.000001', disabled: ENABLE_DYNAMIC_PRICING, description: '固定买入价格（动态价格关闭时使用）' },
+    { label: 'SELL PRICE', value: ORDER_PRICE_SELL, key: 'ORDER_PRICE_SELL', type: 'number', step: '0.000001', disabled: ENABLE_DYNAMIC_PRICING, description: '固定卖出价格（动态价格关闭时使用）' }
+  ]);
+
+  // 交易配置
+  const tradeSection = createParameterSection('TRADE CONFIG', [
+    { label: 'VOLUME', value: ORDER_VOLUME, key: 'ORDER_VOLUME', type: 'number', step: '0.000001', description: '每次交易的 USDT 数量' },
+    { label: 'MAX TRADES', value: MAX_TRADES, key: 'MAX_TRADES', type: 'number', step: '1', description: '预设买卖轮数' },
+    { label: 'TIMEOUT(SEC)', value: ORDER_TIMEOUT_MS / 1000, key: 'ORDER_TIMEOUT_MS', type: 'number', step: '1', transform: (val) => val * 1000, description: '订单超时时间（秒）' }
+  ]);
+
+  // 其他配置
+  const otherSection = createParameterSection('OTHER CONFIG', [
+    { label: 'MIN VOLUME(M)', value: MIN_VOLUME_M, key: 'MIN_VOLUME_M', type: 'number', step: '1', description: '开始交易的最低24小时成交量要求' }
+  ]);
+
+  // 开关配置
+  // const switchSection = createSwitchSection('FUNCTION SWITCH', [
+  //   { label: 'PRICE WARNING ABORT', value: ABORT_ON_PRICE_WARNING, key: 'ABORT_ON_PRICE_WARNING', description: '遇到价格警告弹窗时停止交易' }
+  // ]);
+
+  // 控制按钮
+  const buttonSection = createButtonSection();
+
+  // 动态价格显示区域
+  const dynamicPriceSection = createDynamicPriceSection();
+
+  // 交易统计区域
+  const statsSection = createStatsSection();
+
+  // 创建网格容器
+  const gridContainer = document.createElement('div');
+  gridContainer.className = 'grid-container';
+  gridContainer.style.cssText = `
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 4px;
+    margin-top: 4px;
+  `;
+
+  // 组装界面
+  controlPanel.appendChild(titleBar);
+  
+  // 左列 - 价格配置
+  const leftColumn = document.createElement('div');
+  leftColumn.style.cssText = `
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  `;
+  leftColumn.appendChild(priceSection);
+  
+  // 中列 - 交易配置和其他配置
+  const middleColumn = document.createElement('div');
+  middleColumn.style.cssText = `
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  `;
+  middleColumn.appendChild(tradeSection);
+  middleColumn.appendChild(otherSection);
+  // middleColumn.appendChild(switchSection);
+  
+  // 右列 - 控制和统计
+  const rightColumn = document.createElement('div');
+  rightColumn.style.cssText = `
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  `;
+  rightColumn.appendChild(buttonSection);
+  rightColumn.appendChild(dynamicPriceSection);
+  rightColumn.appendChild(statsSection);
+  
+  gridContainer.appendChild(leftColumn);
+  gridContainer.appendChild(middleColumn);
+  gridContainer.appendChild(rightColumn);
+  controlPanel.appendChild(gridContainer);
+
+  // 添加到页面
+  document.body.appendChild(controlPanel);
+
+  // 添加动画效果
+  controlPanel.style.opacity = '0';
+  controlPanel.style.transform = 'translateX(20px)';
+  setTimeout(() => {
+    controlPanel.style.opacity = '1';
+    controlPanel.style.transform = 'translateX(0)';
+  }, 100);
+
+  // 初始化动态价格显示
+  if (ENABLE_DYNAMIC_PRICING) {
+    const section = document.getElementById('dynamic-price-section');
+    if (section) {
+      section.style.display = 'block';
+    }
+  }
+
+  logit('悬浮控制面板已创建');
+}
+
+/**
+ * 创建参数配置区域
+ */
+function createParameterSection(title, parameters) {
+  const section = document.createElement('div');
+  section.style.cssText = `
+    margin-bottom: 2px;
+    padding: 3px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid #ffffff;
+  `;
+
+  const sectionTitle = document.createElement('div');
+  sectionTitle.textContent = `[ ${title} ]`;
+  sectionTitle.style.cssText = `
+    font-weight: bold;
+    margin-bottom: 3px;
+    color: #ffffff;
+    font-size: 10px;
+    text-align: center;
+    letter-spacing: 1px;
+  `;
+
+  section.appendChild(sectionTitle);
+
+  parameters.forEach(param => {
+    // 参数行容器
+    const paramContainer = document.createElement('div');
+    paramContainer.style.cssText = `
+      margin-bottom: 3px;
+      padding: 2px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    `;
+
+    // 参数行
+    const paramRow = document.createElement('div');
+    paramRow.style.cssText = `
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1px;
+    `;
+
+    const label = document.createElement('label');
+    label.textContent = param.label;
+    label.style.cssText = `
+      font-size: 10px;
+      color: #ffffff;
+              min-width: 80px;
+      font-family: 'Courier New', monospace;
+      font-weight: bold;
+    `;
+
+    // 创建输入控件
+    let input;
+    if (param.type === 'checkbox') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = param.value;
+      input.style.cssText = `
+        width: 14px;
+        height: 14px;
+        accent-color: #ffffff;
+      `;
+    } else {
+      input = document.createElement('input');
+      input.type = param.type;
+      input.value = param.value;
+      input.step = param.step;
+      input.disabled = param.disabled || false;
+      input.style.cssText = `
+        width: 90px;
+        padding: 2px 4px;
+        border: 1px solid #ffffff;
+        background: ${param.disabled ? '#333' : '#000'};
+        color: ${param.disabled ? '#666' : '#ffffff'};
+        font-size: 10px;
+        text-align: right;
+        font-family: 'Courier New', monospace;
+      `;
+    }
+
+    input.setAttribute('data-key', param.key);
+
+    // 事件处理
+    if (param.type === 'checkbox') {
+      input.onchange = () => {
+        window[param.key] = input.checked;
+        logit(`${param.label} 已${input.checked ? '启用' : '禁用'}`);
+        
+        // 如果是动态价格开关，需要更新价格输入框状态
+        if (param.key === 'ENABLE_DYNAMIC_PRICING') {
+          updatePriceInputsState(input.checked);
+          if (input.checked) {
+            // 显示动态价格区域
+            const section = document.getElementById('dynamic-price-section');
+            if (section) {
+              section.style.display = 'block';
+            }
+          } else {
+            // 隐藏动态价格区域
+            hideDynamicPriceDisplay();
+          }
+        }
+      };
+    } else {
+      input.onchange = () => {
+        let value = param.type === 'number' ? parseFloat(input.value) : input.value;
+        if (param.transform) {
+          value = param.transform(value);
+        }
+        window[param.key] = value;
+        logit(`${param.label} 已更新为: ${value}`);
+      };
+    }
+
+    paramRow.appendChild(label);
+    paramRow.appendChild(input);
+    paramContainer.appendChild(paramRow);
+
+    // 添加说明文字
+    if (param.description) {
+      const description = document.createElement('div');
+      description.textContent = `  ${param.description}`;
+      description.style.cssText = `
+        font-size: 10px;
+        color: #cccccc;
+        font-family: 'Courier New', monospace;
+        line-height: 1.2;
+        margin-top: 2px;
+      `;
+      paramContainer.appendChild(description);
+    }
+
+    section.appendChild(paramContainer);
+  });
+
+  return section;
+}
+
+/**
+ * 更新价格输入框状态
+ */
+function updatePriceInputsState(isDynamicEnabled) {
+  const buyPriceInput = document.querySelector('input[data-key="ORDER_PRICE_BUY"]');
+  const sellPriceInput = document.querySelector('input[data-key="ORDER_PRICE_SELL"]');
+  
+  if (buyPriceInput) {
+    buyPriceInput.disabled = isDynamicEnabled;
+    buyPriceInput.style.background = isDynamicEnabled ? '#333' : '#000';
+    buyPriceInput.style.color = isDynamicEnabled ? '#666' : '#00ff00';
+  }
+  
+  if (sellPriceInput) {
+    sellPriceInput.disabled = isDynamicEnabled;
+    sellPriceInput.style.background = isDynamicEnabled ? '#333' : '#000';
+    sellPriceInput.style.color = isDynamicEnabled ? '#666' : '#00ff00';
+  }
+}
+
+/**
+ * 创建开关配置区域
+ */
+function createSwitchSection(title, switches) {
+  const section = document.createElement('div');
+  section.style.cssText = `
+    margin-bottom: 2px;
+    padding: 3px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid #ffffff;
+  `;
+
+  const sectionTitle = document.createElement('div');
+  sectionTitle.textContent = `[ ${title} ]`;
+  sectionTitle.style.cssText = `
+    font-weight: bold;
+    margin-bottom: 3px;
+    color: #ffffff;
+    font-size: 10px;
+    text-align: center;
+    letter-spacing: 1px;
+  `;
+
+  section.appendChild(sectionTitle);
+
+  switches.forEach(sw => {
+    // 开关容器
+    const switchContainer = document.createElement('div');
+    switchContainer.style.cssText = `
+      margin-bottom: 3px;
+      padding: 2px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    `;
+
+    const switchRow = document.createElement('div');
+    switchRow.style.cssText = `
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1px;
+    `;
+
+    const label = document.createElement('label');
+    label.textContent = sw.label;
+    label.style.cssText = `
+      font-size: 10px;
+      color: #ffffff;
+      font-family: 'Courier New', monospace;
+      font-weight: bold;
+    `;
+
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = sw.value;
+    toggle.setAttribute('data-key', sw.key);
+    toggle.style.cssText = `
+      width: 14px;
+      height: 14px;
+      accent-color: #ffffff;
+    `;
+
+    toggle.onchange = () => {
+      window[sw.key] = toggle.checked;
+      logit(`${sw.label} 已${toggle.checked ? '启用' : '禁用'}`);
+    };
+
+    switchRow.appendChild(label);
+    switchRow.appendChild(toggle);
+    switchContainer.appendChild(switchRow);
+
+    // 添加说明文字
+    if (sw.description) {
+      const description = document.createElement('div');
+      description.textContent = `  ${sw.description}`;
+      description.style.cssText = `
+        font-size: 10px;
+        color: #cccccc;
+        font-family: 'Courier New', monospace;
+        line-height: 1.2;
+        margin-top: 2px;
+      `;
+      switchContainer.appendChild(description);
+    }
+
+    section.appendChild(switchContainer);
+  });
+
+  return section;
+}
+
+/**
+ * 创建控制按钮区域
+ */
+function createButtonSection() {
+  const section = document.createElement('div');
+  section.style.cssText = `
+    display: flex;
+    gap: 2px;
+    margin-top: 2px;
+  `;
+
+  // 开始交易按钮
+  const startBtn = document.createElement('button');
+  startBtn.textContent = '[START]';
+  startBtn.style.cssText = `
+    flex: 1;
+    padding: 4px 6px;
+    background: #000;
+    color: #ffffff;
+    border: 1px solid #ffffff;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  `;
+
+  startBtn.onmouseover = () => {
+    startBtn.style.background = '#ffffff';
+    startBtn.style.color = '#000';
+  };
+  startBtn.onmouseout = () => {
+    startBtn.style.background = '#000';
+    startBtn.style.color = '#ffffff';
+  };
+
+        startBtn.onclick = async () => {
+        if (!isTrading) {
+          isTrading = true;
+          startBtn.textContent = '[RUNNING]';
+          startBtn.style.background = '#ffaa00';
+          startBtn.style.color = '#000';
+          startBtn.disabled = true;
+          logit('开始自动交易...');
+          
+          // 交易开始前先计算一次统计
+          logit('交易开始前计算初始统计数据...');
+          await calculateTradingVolumeForPanel();
+          
+          startTrading().finally(() => {
+            isTrading = false;
+            startBtn.textContent = '[START]';
+            startBtn.style.background = '#000';
+            startBtn.style.color = '#ffffff';
+            startBtn.disabled = false;
+          });
+        }
+      };
+
+  // 停止交易按钮
+  const stopBtn = document.createElement('button');
+  stopBtn.textContent = '[STOP]';
+  stopBtn.style.cssText = `
+    flex: 1;
+    padding: 4px 6px;
+    background: #000;
+    color: #ff6666;
+    border: 1px solid #ff6666;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  `;
+
+  stopBtn.onmouseover = () => {
+    stopBtn.style.background = '#ff6666';
+    stopBtn.style.color = '#000';
+  };
+  stopBtn.onmouseout = () => {
+    stopBtn.style.background = '#000';
+    stopBtn.style.color = '#ff6666';
+  };
+
+  stopBtn.onclick = () => {
+    stopTrading = true;
+    isTrading = false;
+    logit('已发送停止交易指令');
+    alert('已发送停止交易指令，交易将在当前轮次完成后停止');
+  };
+
+  // 计算交易量按钮
+  const calcBtn = document.createElement('button');
+  calcBtn.textContent = '[CALC]';
+  calcBtn.style.cssText = `
+    flex: 1;
+    padding: 4px 6px;
+    background: #000;
+    color: #cccccc;
+    border: 1px solid #cccccc;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  `;
+
+  calcBtn.onmouseover = () => {
+    calcBtn.style.background = '#cccccc';
+    calcBtn.style.color = '#000';
+  };
+  calcBtn.onmouseout = () => {
+    calcBtn.style.background = '#000';
+    calcBtn.style.color = '#cccccc';
+  };
+
+  calcBtn.onclick = async () => {
+    await updateStatsDisplay();
+  };
+
+  section.appendChild(startBtn);
+  section.appendChild(stopBtn);
+  section.appendChild(calcBtn);
+
+  return section;
+}
+
+/**
+ * 创建动态价格显示区域
+ */
+function createDynamicPriceSection() {
+  const section = document.createElement('div');
+  section.style.cssText = `
+    margin-top: 2px;
+    padding: 3px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid #ffffff;
+    display: none;
+  `;
+  section.id = 'dynamic-price-section';
+
+  const sectionTitle = document.createElement('div');
+  sectionTitle.textContent = '[ DYNAMIC PRICES ]';
+  sectionTitle.style.cssText = `
+    font-weight: bold;
+    margin-bottom: 3px;
+    color: #ffffff;
+    font-size: 10px;
+    text-align: center;
+    letter-spacing: 1px;
+  `;
+
+  const priceContent = document.createElement('div');
+  priceContent.id = 'dynamic-price-content';
+  priceContent.style.cssText = `
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    line-height: 1.2;
+    text-align: center;
+    color: #cccccc;
+  `;
+  priceContent.innerHTML = `
+    <div>等待动态价格计算...</div>
+  `;
+
+  section.appendChild(sectionTitle);
+  section.appendChild(priceContent);
+
+  return section;
+}
+
+/**
+ * 更新动态价格显示
+ */
+function updateDynamicPriceDisplay(buyPrice, sellPrice) {
+  const section = document.getElementById('dynamic-price-section');
+  const content = document.getElementById('dynamic-price-content');
+  
+  if (section && content) {
+    section.style.display = 'block';
+    content.innerHTML = `
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2px;">
+        <div style="padding: 1px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+          <div style="color: #00ff00; font-weight: bold; margin-bottom: 1px; font-size: 10px;">BUY</div>
+          <div style="color: #ffffff; font-size: 10px;">${buyPrice.toFixed(5)}</div>
+        </div>
+        <div style="padding: 1px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+          <div style="color: #ff6666; font-weight: bold; margin-bottom: 1px; font-size: 10px;">SELL</div>
+          <div style="color: #ffffff; font-size: 10px;">${sellPrice.toFixed(5)}</div>
+        </div>
+      </div>
+    `;
+    
+    // 保存当前动态价格
+    currentDynamicPrices = { buyPrice, sellPrice };
+  }
+}
+
+/**
+ * 隐藏动态价格显示
+ */
+function hideDynamicPriceDisplay() {
+  const section = document.getElementById('dynamic-price-section');
+  if (section) {
+    section.style.display = 'none';
+  }
+}
+
+/**
+ * 创建交易统计区域
+ */
+function createStatsSection() {
+  const section = document.createElement('div');
+  section.style.cssText = `
+    margin-top: 2px;
+    padding: 3px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid #ffffff;
+    border-top: 2px solid #ffffff;
+  `;
+
+  const sectionTitle = document.createElement('div');
+  sectionTitle.textContent = '[ TRADING STATS ]';
+  sectionTitle.style.cssText = `
+    font-weight: bold;
+    margin-bottom: 3px;
+    color: #ffffff;
+    font-size: 10px;
+    text-align: center;
+    letter-spacing: 1px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  `;
+
+  // 添加刷新按钮
+  const refreshBtn = document.createElement('button');
+  refreshBtn.textContent = '[R]';
+  refreshBtn.style.cssText = `
+    background: none;
+    border: 1px solid #ffffff;
+    color: #ffffff;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    cursor: pointer;
+    padding: 1px 3px;
+    transition: all 0.2s ease;
+  `;
+
+  refreshBtn.onmouseover = () => {
+    refreshBtn.style.background = '#ffffff';
+    refreshBtn.style.color = '#000';
+  };
+  refreshBtn.onmouseout = () => {
+    refreshBtn.style.background = 'none';
+    refreshBtn.style.color = '#ffffff';
+  };
+  refreshBtn.onclick = async () => {
+    await updateStatsDisplay();
+  };
+
+  sectionTitle.appendChild(refreshBtn);
+
+  // 创建统计内容容器
+  const statsContent = document.createElement('div');
+  statsContent.id = 'stats-content';
+  statsContent.style.cssText = `
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    line-height: 1.2;
+  `;
+
+  // 初始显示
+  statsContent.innerHTML = `
+    <div style="color: #999; text-align: center; padding: 4px; font-size: 10px;">
+      CLICK [R] TO CALC
+    </div>
+  `;
+
+  section.appendChild(sectionTitle);
+  section.appendChild(statsContent);
+
+  return section;
+}
+
+/**
+ * 更新统计显示
+ */
+async function updateStatsDisplay() {
+  const statsContent = document.getElementById('stats-content');
+  if (!statsContent) return;
+
+  statsContent.innerHTML = `
+    <div style="color: #ffff00; text-align: center; padding: 4px; font-size: 10px;">
+      正在计算中...
+    </div>
+  `;
+
+  // 同步计算统计
+  await calculateTradingVolumeForPanel();
+}
+
+/**
+ * 为控制面板计算交易量统计
+ */
+async function calculateTradingVolumeForPanel() {
+  try {
+    const statsContent = document.getElementById('stats-content');
+    if (!statsContent) return;
+
+    // 显示计算中状态
+    statsContent.innerHTML = `
+      <div style="color: #ffff00; text-align: center; padding: 4px; font-size: 10px;">
+        GETTING DATA...
+      </div>
+    `;
+
+    // 同步点击委托历史标签页
+    const tabClicked = await clickOrderHistoryTabForVolumeCalc();
+    if (!tabClicked) {
+      statsContent.innerHTML = `
+        <div style="color: #ff6666; text-align: center; padding: 4px; font-size: 10px;">
+          NO ACCESS TO HISTORY
+        </div>
+      `;
+      return;
+    }
+
+    // 等待tab切换完成，使用waitForElement等待表格加载
+    await waitForElement('table', null, null, 10, 1000, 1000);
+
+    // 同步获取所有交易数据
+    const allTrades = await getAllTradesForVolumeCalc();
+    
+    if (allTrades.length === 0) {
+      statsContent.innerHTML = `
+        <div style="color: #ff6666; text-align: center; padding: 4px; font-size: 10px;">
+          NO TRADES FOUND
+        </div>
+      `;
+      return;
+    }
+
+    // 计算每日交易量
+    const dailyStats = calculateDailyVolumeForVolumeCalc(allTrades);
+
+    // 获取今日日期
+    const now = new Date();
+    let today;
+    if (now.getHours() < 8) {
+      today = new Date(now);
+      today.setDate(today.getDate() - 1);
+    } else {
+      today = new Date(now);
+    }
+    const todayKey = today.toISOString().split('T')[0];
+
+    // 计算今日统计
+    const todayTrades = Object.keys(dailyStats).length > 0 && dailyStats[todayKey] ? dailyStats[todayKey].trades : [];
+    const todayBuyTrades = Object.keys(dailyStats).length > 0 && dailyStats[todayKey] ? dailyStats[todayKey].buyTrades : [];
+    const todayTotalVolume = todayBuyTrades.reduce((sum, trade) => Math.round((sum + trade.volume) * 100000000) / 100000000, 0);
+    const todayTotalValue = todayBuyTrades.reduce((sum, trade) => Math.round((sum + trade.totalValue) * 100000000) / 100000000, 0);
+    const todayAvgValue = todayBuyTrades.length > 0 ? Math.round((todayTotalValue / todayBuyTrades.length) * 100000000) / 100000000 : 0;
+
+    // 获取今日的买入卖出统计
+    const todayStats = dailyStats[todayKey] || {};
+    const todayBuyCount = todayStats.buyTrades ? todayStats.buyTrades.length : 0;
+    const todaySellCount = todayStats.sellTrades ? todayStats.sellTrades.length : 0;
+    const todayWearLoss = todayStats.wearLoss || 0;
+    const todayWearLossPercentage = todayStats.wearLossPercentage || 0;
+
+    // 更新显示
+    statsContent.innerHTML = `
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; font-size: 10px;">
+        <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+          <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">${todayKey}</div>
+          <div style="display: flex; justify-content: space-between;">
+            <span style="color: #ffffff;">BUY:</span>
+            <span style="color: #ffffff;">${todayBuyCount}笔</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span style="color: #ffffff;">SELL:</span>
+            <span style="color: #ffffff;">${todaySellCount}笔</span>
+          </div>
+        </div>
+        <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+          <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">TRADE</div>
+          <div style="display: flex; justify-content: space-between;">
+            <span style="color: #ffffff;">TOTAL:</span>
+            <span style="color: #ffffff;">${todayTotalValue.toFixed(0)}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span style="color: #ffffff;">AVG:</span>
+            <span style="color: #ffffff;">${todayAvgValue.toFixed(0)}</span>
+          </div>
+        </div>
+        <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+          <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">4X</div>
+          <div style="text-align: center; color: #ffffff;">
+            ${(todayTotalValue * 4).toFixed(0)} USDT
+          </div>
+        </div>
+        <div style="padding: 0px; background: rgba(255,255,255,0.1); border: 1px solid #ffffff;">
+          <div style="color: #ffffff; font-weight: bold; margin-bottom: 1px;">WEAR</div>
+          <div style="display: flex; justify-content: space-between;">
+            <span style="color: #ffffff;">LOSS:</span>
+            <span style="color: ${todayWearLoss > 0 ? '#ff6666' : '#ffffff'};">${todayWearLoss.toFixed(2)}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span style="color: #ffffff;">RATE:</span>
+            <span style="color: ${todayWearLossPercentage > 0 ? '#ff6666' : '#ffffff'};">${todayWearLossPercentage.toFixed(2)}%</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+  } catch (error) {
+    const statsContent = document.getElementById('stats-content');
+    if (statsContent) {
+      statsContent.innerHTML = `
+        <div style="color: #ff6666; text-align: center; padding: 4px; font-size: 10px;">
+          CALC ERROR: ${error.message}
+        </div>
+      `;
+    }
+    logit("控制面板交易量计算失败:", error);
+  }
+}
 
 // === 强制中断支持 ===
 let stopTrading = false;
 window.stopAlphaTrading = () => {
   stopTrading = true;
-  logit("已收到 stopAlphaTrading 指令，自动刷单将尽快中断...");
+  logit("已收到 stopAlphaTrading 指令，自动交易将尽快中断...");
+};
+
+// === 全局控制函数 ===
+window.showAlphaTradingPanel = () => {
+  createControlPanel();
+  logit("已重新打开 Alpha Trading 控制面板");
 };
 
 // 订单类型常量
@@ -128,8 +1051,8 @@ function waitForElement(
   checker = null,
   onReady = null,
   maxAttempts = 10,
-  interval = 2000,
-  initialDelay = 1000
+  interval = 1000,
+  initialDelay = 500
 ) {
   return new Promise((resolve, reject) => {
     setTimeout(() => {
@@ -210,7 +1133,7 @@ function setInputValue(inputElement, value) {
 
 /**
  * 设置买入/卖出数量（仅买入时用）
- * @param {number} amount
+ * @param {number} amount - 币种数量
  */
 function setVolume(amount) {
   const input = document.querySelector(SELECTORS.volumeInput);
@@ -301,14 +1224,14 @@ async function placeOrder({
   limitTab.click();
   logit("已点击限价标签");
 
-  // 3. 卖出时优先将滑块拉满（百分比100%），并判断是否有可卖资产
+  // 3. 卖出时优先将滑块拉满（百分比100%），并判断是否有可卖币种
   if (type === ORDER_TYPE.SELL) {
     const slider = document.querySelector('input[role="slider"]');
     if (slider) {
       setInputValue(slider, 100);
       if (slider.value === "0") {
-        logit("卖出失败，无存货");
-        return { status: "no_stock", message: "无可卖资产" };
+        logit("卖出失败，无可用币种");
+        return { status: "no_stock", message: "无可卖币种" };
       }
     }
   }
@@ -322,7 +1245,7 @@ async function placeOrder({
   }
   logit(
     `已设置限价${price}` +
-      (type === ORDER_TYPE.BUY ? `和数量${volume}` : "，全部可卖资产")
+      (type === ORDER_TYPE.BUY ? `和数量${volume}` : "，全部可卖币种")
   );
 
   // 6. 点击买/卖按钮
@@ -583,7 +1506,7 @@ async function sell(price, volume, abortOnPriceWarning = false) {
 }
 
 /**
- * 检查24h成交量是否足够，不足500M则不刷单
+ * 检查24h成交量是否足够，不足500M则不交易
  * @returns {Promise<boolean>} 成交量是否足够
  */
 async function checkVolumeBeforeTrading() {
@@ -648,11 +1571,11 @@ async function checkVolumeBeforeTrading() {
     logit(`成交量转换为M单位: ${volumeInM}M`);
     
     if (volumeInM < MIN_VOLUME_M) {
-      alert(`24 小时成交量低于 ${MIN_VOLUME_M}M (当前: ${volumeInM}M)，检查未通过，停止自动刷单`);
+      alert(`24 小时成交量低于 ${MIN_VOLUME_M}M (当前: ${volumeInM}M)，检查未通过，停止自动交易`);
       return false;
     }
     
-    logit(`成交量充足 (${volumeInM}M)，可以开始刷单`);
+    logit(`成交量充足 (${volumeInM}M)，可以开始交易`);
     return true;
   } catch (error) {
     logit("检查成交量时出错:", error);
@@ -661,7 +1584,7 @@ async function checkVolumeBeforeTrading() {
 }
 
 /**
- * 主交易循环，自动买入卖出刷交易量
+ * 主交易循环，自动买入卖出交易
  */
 async function startTrading() {
   // 开始前检查成交量
@@ -671,13 +1594,13 @@ async function startTrading() {
     return;
   }
   
-  // 成交量检查通过，弹窗提示开始刷单
-  logit("成交量检查通过，开始自动刷单");
+  // 成交量检查通过，弹窗提示开始交易
+  logit("成交量检查通过，开始自动交易");
   
   let tradeCount = 0;
   while (tradeCount < MAX_TRADES) {
     if (stopTrading) {
-      logit("检测到 stopTrading 标志，自动刷单已被强制中断");
+      logit("检测到 stopTrading 标志，自动交易已被强制中断");
       break;
     }
     
@@ -693,8 +1616,12 @@ async function startTrading() {
           currentBuyPrice = dynamicPrices.buyPrice;
           currentSellPrice = dynamicPrices.sellPrice;
           logit(`第${tradeCount + 1}轮使用动态价格 - 买入: ${currentBuyPrice}, 卖出: ${currentSellPrice}`);
+          
+          // 更新面板显示
+          updateDynamicPriceDisplay(currentBuyPrice, currentSellPrice);
         } else {
           logit("动态价格获取失败，使用默认价格");
+          hideDynamicPriceDisplay();
         }
       } else {
         logit(`第${tradeCount + 1}轮使用固定价格 - 买入: ${currentBuyPrice}, 卖出: ${currentSellPrice}`);
@@ -718,6 +1645,13 @@ async function startTrading() {
         if (sellResult && sellResult.status === "completed") {
           logit("卖出成功,继续下一轮交易");
           tradeCount++;
+          
+          // 每3轮交易计算一次统计，或者最后一轮完成时计算
+          if (tradeCount % 3 === 0 || tradeCount >= MAX_TRADES) {
+            logit(`第${tradeCount}轮交易完成，计算统计数据...`);
+            // 同步计算统计，确保在正确的tab页面
+            await calculateTradingVolumeForPanel();
+          }
         } else {
           logit("卖出失败,暂停交易，返回值:", sellResult);
           alert("卖出失败,已停止交易");
@@ -739,8 +1673,8 @@ async function startTrading() {
     }
   }
   if (tradeCount >= MAX_TRADES) {
-    logit("已完成设定的交易次数");
-    alert("已完成设定的交易次数");
+    logit("已完成设定的交易轮数");
+    alert("已完成设定的交易轮数");
   }
 }
 
@@ -762,11 +1696,8 @@ async function clickOrderHistoryTabForVolumeCalc() {
     orderHistoryTab.click();
     logit("已点击委托历史标签页");
     
-    // 等待页面加载
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // 限制在指定的容器内查找元素
-    const tradeContainer = document.querySelector('div.bg-TradeBg div.order-6');
+    // 等待交易容器加载
+    const tradeContainer = await waitForElement('div.bg-TradeBg div.order-6', null, null, 10, 1000, 1000);
     if (!tradeContainer) {
       logit("未找到交易容器");
       return false;
@@ -778,7 +1709,8 @@ async function clickOrderHistoryTabForVolumeCalc() {
       if (limitPriceTab) {
         limitPriceTab.click();
         logit("已点击「限价」标签");
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // 等待限价标签激活
+        await waitForElement('#bn-tab-0[aria-selected="true"]', null, null, 5, 500, 500);
       } else {
         logit("未找到「限价」标签");
       }
@@ -824,7 +1756,8 @@ async function clickOrderHistoryTabForVolumeCalc() {
       if (oneDayButton) {
         oneDayButton.click();
         logit("已点击「1天」时间范围");
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // 等待时间范围按钮激活
+        await waitForElement('div[style*="background-color: var(--color-bg3)"]', null, null, 5, 500, 500);
       } else {
         logit("未找到「1天」时间范围按钮，尝试查找所有时间按钮...");
         // 输出所有可能的时间按钮，帮助调试
@@ -845,7 +1778,7 @@ async function clickOrderHistoryTabForVolumeCalc() {
     }
     
     // 等待表格加载
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await waitForElement('table', null, null, 10, 1000, 1000);
     return true;
   } catch (error) {
     logit("点击委托历史标签页失败:", error);
@@ -860,6 +1793,12 @@ async function clickOrderHistoryTabForVolumeCalc() {
  */
 function parseTradeRowForVolumeCalc(row) {
   try {
+    // 确保row是有效的DOM元素
+    if (!row || !row.querySelectorAll) {
+      logit(`DEBUG: 无效的DOM行元素`);
+      return null;
+    }
+    
     const cells = row.querySelectorAll('.bn-web-table-cell');
     if (cells.length < 11) {
       logit(`DEBUG: 单元格数量不足，期望11个，实际${cells.length}个`);
@@ -999,9 +1938,12 @@ function parseTradeRowForVolumeCalc(row) {
  * 获取当前页面的交易数据
  * @returns {Array} 交易数据数组
  */
-function getCurrentPageTradesForVolumeCalc() {
+async function getCurrentPageTradesForVolumeCalc() {
   const trades = [];
   try {
+    // 等待表格行加载
+    await waitForElement('table tbody tr', null, null, 5, 500, 500);
+    
     // 尝试多种表格选择器
     let rows = document.querySelectorAll('.bn-web-table-tbody .bn-web-table-row:not(.bn-web-table-measure-row)');
     
@@ -1124,8 +2066,8 @@ async function clickNextPageForVolumeCalc() {
     nextButton.click();
     logit("已点击下一页");
     
-    // 等待页面加载
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // 等待页面加载，使用waitForElement等待表格行加载
+    await waitForElement('table tbody tr', null, null, 10, 1000, 1000);
     return true;
   } catch (error) {
     logit("点击下一页失败:", error);
@@ -1194,22 +2136,22 @@ function calculateDailyVolumeForVolumeCalc(trades) {
       if (!dailyStats[dateKey]) {
         dailyStats[dateKey] = {
           date: dateKey,
-          totalVolume: 0, // KOGE总量
-          totalValue: 0, // USDT成交额总量
-          tradeCount: 0,
-          trades: [],
-          buyTrades: [],
-          sellTrades: [],
-          totalBuyVolume: 0, // KOGE买入量
-          totalSellVolume: 0, // KOGE卖出量
-          totalBuyValue: 0, // USDT买入成交额
-          totalSellValue: 0, // USDT卖出成交额
-          wearLoss: 0, // 磨损损失（USDT）
-          wearLossPercentage: 0 // 磨损百分比
+                  totalVolume: 0, // 币种总量
+        totalValue: 0, // USDT成交额总量
+        tradeCount: 0,
+        trades: [],
+        buyTrades: [],
+        sellTrades: [],
+        totalBuyVolume: 0, // 币种买入量
+        totalSellVolume: 0, // 币种卖出量
+        totalBuyValue: 0, // USDT买入成交额
+        totalSellValue: 0, // USDT卖出成交额
+        wearLoss: 0, // 磨损损失（USDT）
+        wearLossPercentage: 0 // 磨损百分比
         };
       }
       
-      dailyStats[dateKey].totalVolume += trade.volume; // KOGE总量
+      dailyStats[dateKey].totalVolume += trade.volume; // 币种总量
       dailyStats[dateKey].tradeCount += 1;
       dailyStats[dateKey].trades.push(trade);
       
@@ -1218,14 +2160,14 @@ function calculateDailyVolumeForVolumeCalc(trades) {
       // 分别统计买入和卖出
       if (trade.isBuy) {
         dailyStats[dateKey].buyTrades.push(trade);
-        dailyStats[dateKey].totalBuyVolume = Math.round((dailyStats[dateKey].totalBuyVolume + trade.volume) * 100000000) / 100000000; // KOGE买入量
+        dailyStats[dateKey].totalBuyVolume = Math.round((dailyStats[dateKey].totalBuyVolume + trade.volume) * 100000000) / 100000000; // 币种买入量
         dailyStats[dateKey].totalBuyValue = Math.round((dailyStats[dateKey].totalBuyValue + trade.totalValue) * 100000000) / 100000000; // USDT买入成交额
         // 成交总额只算买入
         dailyStats[dateKey].totalValue = Math.round((dailyStats[dateKey].totalValue + trade.totalValue) * 100000000) / 100000000;
         logit(`DEBUG: 买入交易 - 累计买入量: ${dailyStats[dateKey].totalBuyVolume}, 累计买入额: ${dailyStats[dateKey].totalBuyValue}`);
       } else if (trade.isSell) {
         dailyStats[dateKey].sellTrades.push(trade);
-        dailyStats[dateKey].totalSellVolume = Math.round((dailyStats[dateKey].totalSellVolume + trade.volume) * 100000000) / 100000000; // KOGE卖出量
+        dailyStats[dateKey].totalSellVolume = Math.round((dailyStats[dateKey].totalSellVolume + trade.volume) * 100000000) / 100000000; // 币种卖出量
         dailyStats[dateKey].totalSellValue = Math.round((dailyStats[dateKey].totalSellValue + trade.totalValue) * 100000000) / 100000000; // USDT卖出成交额
         // 注意：成交总额不算卖出，只算买入
         logit(`DEBUG: 卖出交易 - 累计卖出量: ${dailyStats[dateKey].totalSellVolume}, 累计卖出额: ${dailyStats[dateKey].totalSellValue}`);
@@ -1297,7 +2239,10 @@ function shouldStopPagination() {
       rows = document.querySelectorAll('tbody tr');
     }
     
-    // 检查每一行，如果发现非今日交易就停止翻页
+    let foundNonTodayTrade = false;
+    let todayTradeCount = 0;
+    
+    // 检查每一行，统计今日交易数量并检查是否有非今日交易
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const cells = row.querySelectorAll('.bn-web-table-cell');
@@ -1316,14 +2261,27 @@ function shouldStopPagination() {
             adjustedDate.setHours(8, 0, 0, 0);
             const dateKey = adjustedDate.toISOString().split('T')[0];
             
-            // 如果发现非今日交易，停止翻页
-            if (dateKey !== todayKey) {
+            if (dateKey === todayKey) {
+              todayTradeCount++;
+            } else {
+              foundNonTodayTrade = true;
               logit(`发现非今日交易: ${timeText} -> ${dateKey}，停止翻页`);
-              return true;
+              break;
             }
           }
         }
       }
+    }
+    
+    // 如果发现非今日交易，或者当前页没有今日交易，停止翻页
+    if (foundNonTodayTrade) {
+      return true;
+    }
+    
+    // 如果当前页没有今日交易，也停止翻页（说明已经翻过了）
+    if (todayTradeCount === 0) {
+      logit(`当前页没有今日交易，停止翻页`);
+      return true;
     }
     
     return false;
@@ -1344,7 +2302,7 @@ async function getAllTradesForVolumeCalc() {
   
   try {
     // 先获取第一页数据
-    let currentPageTrades = getCurrentPageTradesForVolumeCalc();
+    let currentPageTrades = await getCurrentPageTradesForVolumeCalc();
     allTrades.push(...currentPageTrades);
     pageCount++;
     
@@ -1360,8 +2318,8 @@ async function getAllTradesForVolumeCalc() {
         break;
       }
       
-      // 等待页面加载完成
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // 等待页面加载完成，使用waitForElement等待表格行加载
+      await waitForElement('table tbody tr', null, null, 10, 1000, 1000);
       
       // 再次检查是否有下一页（防止页面加载后状态变化）
       if (!hasNextPageForVolumeCalc()) {
@@ -1371,11 +2329,11 @@ async function getAllTradesForVolumeCalc() {
       
       // 检查当前页面是否包含非今日交易，如果包含就停止翻页
       if (shouldStopPagination()) {
-        logit(`第 ${pageCount + 1} 页包含非今日交易，停止翻页`);
+        logit(`第 ${pageCount + 1} 页超出今日范围，停止翻页`);
         break;
       }
       
-      currentPageTrades = getCurrentPageTradesForVolumeCalc();
+      currentPageTrades = await getCurrentPageTradesForVolumeCalc();
       allTrades.push(...currentPageTrades);
       pageCount++;
       
@@ -1390,7 +2348,7 @@ async function getAllTradesForVolumeCalc() {
       // 每翻几页后稍作停顿，避免被风控
       if (pageCount % 3 === 0) {
         logit("已翻3页，稍作停顿...");
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await waitForElement('table tbody tr', null, null, 5, 500, 1000);
       }
     }
     
@@ -1484,8 +2442,8 @@ async function calculateTradingVolume() {
       const stats = dailyStats[todayKey];
       console.log(`今日 (${todayKey}) 统计:`);
       console.log(`  买入订单数: ${stats.buyTrades?.length || 0}`);
-      console.log(`  买入总量: ${stats.totalBuyVolume?.toFixed(4) || '0.0000'} KOGE`);
-      console.log(`  平均每笔: ${stats.buyTrades?.length > 0 ? (stats.totalBuyVolume / stats.buyTrades.length).toFixed(4) : '0.0000'} KOGE`);
+      console.log(`  买入总量: ${stats.totalBuyVolume?.toFixed(4) || '0.0000'} 币种`);
+      console.log(`  平均每笔: ${stats.buyTrades?.length > 0 ? (stats.totalBuyVolume / stats.buyTrades.length).toFixed(4) : '0.0000'} 币种`);
       console.log("");
     } else {
       console.log(`今日 (${todayKey}) 暂无买入订单`);
@@ -1495,9 +2453,9 @@ async function calculateTradingVolume() {
     // 计算今日统计
     const todayTrades = Object.keys(dailyStats).length > 0 && dailyStats[todayKey] ? dailyStats[todayKey].trades : [];
     const todayBuyTrades = Object.keys(dailyStats).length > 0 && dailyStats[todayKey] ? dailyStats[todayKey].buyTrades : [];
-    const todayTotalVolume = todayBuyTrades.reduce((sum, trade) => Math.round((sum + trade.volume) * 100000000) / 100000000, 0); // KOGE买入总量
+    const todayTotalVolume = todayBuyTrades.reduce((sum, trade) => Math.round((sum + trade.volume) * 100000000) / 100000000, 0); // 币种买入总量
     const todayTotalValue = todayBuyTrades.reduce((sum, trade) => Math.round((sum + trade.totalValue) * 100000000) / 100000000, 0); // USDT买入成交额总量
-    const todayAvgVolume = todayBuyTrades.length > 0 ? Math.round((todayTotalVolume / todayBuyTrades.length) * 100000000) / 100000000 : 0; // 平均KOGE
+    const todayAvgVolume = todayBuyTrades.length > 0 ? Math.round((todayTotalVolume / todayBuyTrades.length) * 100000000) / 100000000 : 0; // 平均币种
     const todayAvgValue = todayBuyTrades.length > 0 ? Math.round((todayTotalValue / todayBuyTrades.length) * 100000000) / 100000000 : 0; // 平均每笔USDT成交额
     
     // 获取今日的买入卖出统计
@@ -1510,9 +2468,9 @@ async function calculateTradingVolume() {
     const todayAvgSellPrice = todayStats.totalSellVolume > 0 ? Math.round((todayStats.totalSellValue / todayStats.totalSellVolume) * 100000000) / 100000000 : 0;
     
     console.log("=== 今日总体统计 ===");
-    console.log(`今日买入总量: ${todayTotalVolume.toFixed(4)} KOGE`);
+    console.log(`今日买入总量: ${todayTotalVolume.toFixed(4)} 币种`);
     console.log(`今日买入总额: ${todayTotalValue.toFixed(2)} USDT`);
-    console.log(`今日平均每笔数量: ${todayAvgVolume.toFixed(4)} KOGE`);
+    console.log(`今日平均每笔数量: ${todayAvgVolume.toFixed(4)} 币种`);
     console.log(`今日平均每笔金额: ${todayAvgValue.toFixed(2)} USDT`);
     if (todayBuyTrades.length > 0) {
       console.log(`今日买入时间范围: ${todayBuyTrades[todayBuyTrades.length - 1]?.rawTime} 至 ${todayBuyTrades[0]?.rawTime}`);
@@ -1783,21 +2741,12 @@ function createStatItem(label, value, color) {
   return item;
 }
 
-// === 启动交易量计算 ===
-// 先创建并展示悬浮窗口，显示"计算中"状态
-createTradingStatsDisplay(
-  new Date().toISOString().split('T')[0], 
-  0, // 初始成交额
-  0, // 初始平均每笔
-  0, // 初始磨损损失
-  0, // 初始磨损百分比
-  true // 显示计算中状态
-);
-
-// 延迟一秒后开始计算，让用户看到窗口先出现
+// === 启动悬浮控制面板 ===
+// 延迟一秒后创建控制面板，让页面完全加载
 setTimeout(() => {
-  calculateTradingVolume();
+  createControlPanel();
 }, 1000);
 
 // === 启动自动交易 ===
+// startTrading();
 // startTrading();
