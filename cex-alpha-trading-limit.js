@@ -1113,8 +1113,8 @@ function waitForElement(
   checker = null,
   onReady = null,
   maxAttempts = 10,
-  interval = 1000,
-  initialDelay = 1500
+  interval = 500,
+  initialDelay = 500
 ) {
   return new Promise((resolve, reject) => {
     setTimeout(() => {
@@ -1238,12 +1238,12 @@ function checkOrderStatus() {
       // 兼容旧逻辑（如有表格）
       const tbody = document.querySelector(".bn-web-table-tbody");
       if (tbody && tbody.children && tbody.children.length > 0) {
-        setTimeout(checkOrder, 1000 + Math.random() * 2000); // 1~3秒随机延迟
+        setTimeout(checkOrder, 500 + Math.random() * 500);
       } else {
-        setTimeout(checkOrder, 1000 + Math.random() * 2000); // 1~3秒随机延迟
+        setTimeout(checkOrder, 500 + Math.random() * 500);
       }
     };
-    setTimeout(checkOrder, 1000 + Math.random() * 2000);
+    setTimeout(checkOrder, 1000);
     timeoutId = setTimeout(() => {
       if (finished) return;
       finished = true;
@@ -1421,7 +1421,7 @@ async function buy(price, volume, abortOnPriceWarning = false) {
 async function getDynamicPrices() {
   try {
     // 等待成交记录区域加载
-    await waitForElement('.ReactVirtualized__Grid', null, null, 5, 1000, 500);
+    await waitForElement('.ReactVirtualized__Grid', null, null, 5);
     
     // 分别获取买入和卖出的价格元素
     const buyPriceElements = document.querySelectorAll('.ReactVirtualized__Grid .flex-1[style*="color: var(--color-Buy)"]');
@@ -1581,9 +1581,7 @@ async function checkVolumeBeforeTrading() {
       },
       null,
       null,
-      5,
-      1000,
-      500
+      5
     );
     
     if (!volumeElement) {
@@ -1764,7 +1762,7 @@ async function clickOrderHistoryTabForVolumeCalc() {
     logit("已点击委托历史标签页");
     
     // 等待交易容器加载
-    const tradeContainer = await waitForElement('div.bg-TradeBg div.order-6', null, null, 10, 1000, 1000);
+    const tradeContainer = await waitForElement('div.bg-TradeBg div.order-6', null, null, 10);
     if (!tradeContainer) {
       logit("未找到交易容器");
       return false;
@@ -1777,7 +1775,7 @@ async function clickOrderHistoryTabForVolumeCalc() {
         limitPriceTab.click();
         logit("已点击「限价」标签");
         // 等待限价标签激活
-        await waitForElement('#bn-tab-0[aria-selected="true"]', null, null, 5, 500, 500);
+        await waitForElement('#bn-tab-0[aria-selected="true"]', null, null, 5);
       } else {
         logit("未找到「限价」标签");
       }
@@ -1824,7 +1822,7 @@ async function clickOrderHistoryTabForVolumeCalc() {
         oneDayButton.click();
         logit("已点击「1周」时间范围");
         // 等待时间范围按钮激活
-        await waitForElement('div[style*="background-color: var(--color-bg3)"]', null, null, 5, 500, 500);
+        await waitForElement('div[style*="background-color: var(--color-bg3)"]', null, null, 5);
       } else {
         logit("未找到「1周」时间范围按钮，尝试查找所有时间按钮...");
         // 输出所有可能的时间按钮，帮助调试
@@ -1845,7 +1843,7 @@ async function clickOrderHistoryTabForVolumeCalc() {
     }
     
     // 等待表格加载
-    await waitForElement('table', null, null, 10, 1000, 1000);
+    await waitForElement('table', null, null, 10);
     return true;
   } catch (error) {
     logit("点击委托历史标签页失败:", error);
@@ -2090,7 +2088,7 @@ async function getCurrentPageTradesForVolumeCalc() {
   try {
     // 等待表格行加载，使用更宽松的等待条件
     try {
-      await waitForElement('table tbody tr', null, null, 5, 500, 500);
+      await waitForElement('table tbody tr', null, null, 5);
     } catch (error) {
       logit("等待表格行加载超时，尝试直接查找:", error.message);
     }
@@ -2285,7 +2283,7 @@ async function clickNextPageForVolumeCalc() {
     nextPageButton.click();
     
     // 等待页面加载
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // await new Promise(resolve => setTimeout(resolve, 500));
     
     // 验证翻页是否成功
     const newActivePage = document.querySelector('.bn-pagination-item.active');
